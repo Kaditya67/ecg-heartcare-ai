@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+/* === LIGHT THEME === */
+:root {
+  --bg: #f9fafb;
+  --card-bg: #ffffff;
+  --text: #1f2937;
+  --accent: #0077b6;         /* Primary action / CTA */
+  --danger: #ef4444;         /* For deletion or error */
+  --skip: #f59e0b;           /* Optional secondary attention */
+  --secondary: #e0f2fe;      /* Light blue for sections or highlights */
+  --border: #e5e7eb;         /* Light gray border */
+  --highlight: #f1f5f9;      /* Subtle highlight background */
+  --btn-text: #ffffff;
+}
+
+
+/* === DARK THEME === */
+[data-theme="dark"] {
+  --bg: #121212;
+  --card-bg: #1e1e1e;
+  --text: #f5f5f5;
+  --accent: #00b4d8;
+  --danger: #ff4d6d;
+  --skip: #ffc300;
+  --secondary: #1a1a1a;
+  --border: #2d2d2d;
+  --highlight: #1e293b;
+  --btn-text: #ffffff;
+}
+
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Poppins', 'Inter', 'Segoe UI', sans-serif;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border);
+  padding: 1.25rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  transition: box-shadow 0.2s;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+
+.button-normal {
+  background-color: var(--accent);
+  color: var(--btn-text);
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: background-color 0.3s;
+}
+
+.button-normal:hover {
+  background-color: #005f8c; /* Slightly darker accent */
+}
+
+
+.button-abnormal {
+  background-color: var(--danger);
+  color: var(--btn-text);
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+
+.button-skip {
+  background-color: var(--skip);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}

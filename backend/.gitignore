@@ -1,24 +1,38 @@
-# Logs
-logs
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.env/
+env/
+*.env
+
+# Django stuff
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*.pot
+*.pyc
+db.sqlite3
+media/
+staticfiles/
+static/
 
-node_modules
-dist
-dist-ssr
-*.local
+# If you use Django migrations cache
+*/migrations/__pycache__/
+*/migrations/*.pyc
+*/migrations/*.pyo
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+
+# Jupyter / Notebooks
+.ipynb_checkpoints
+
+# OS-specific
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+Thumbs.db

@@ -5,6 +5,7 @@ from django.db import transaction
 import pandas as pd
 from .models import ECGFile, ECGRecord
 from .serializers import ECGRecordSerializer, ECGFileSerializer
+from django_filters.rest_framework import DjangoFilterBackend
 
 class FileUploadView(APIView):
     def post(self, request, format=None):
@@ -55,4 +56,10 @@ class FileUploadView(APIView):
 
 class ECGRecordListView(generics.ListAPIView):
     queryset = ECGRecord.objects.all().order_by("id")
+    serializer_class = ECGRecordSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["patient_id", "status", "label"]
+
+class ECGRecordDetailView(generics.RetrieveUpdateAPIView):
+    queryset = ECGRecord.objects.all()
     serializer_class = ECGRecordSerializer

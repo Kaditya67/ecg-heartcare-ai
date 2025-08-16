@@ -1,18 +1,23 @@
 from rest_framework import serializers
-from .models import ECGFile, ECGRecord
+from .models import ECGRecord, ECGFile
 
-class ECGRecordSerializer(serializers.ModelSerializer):
-    wave_length = serializers.SerializerMethodField()
-
+class ECGRecordSerializer(serializers.ModelSerializer):  
     class Meta:
         model = ECGRecord
-        fields = ["patient_id", "heart_rate", "label", "wave_length"]
+        fields = ["id", "patient_id", "heart_rate", "label"]  # add others as required
 
-    def get_wave_length(self, obj):
-        return len(obj.ecg_wave)
+class ECGRecordDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ECGRecord
+        fields = ["id", "patient_id", "heart_rate", "label", "ecg_wave"]
+
+class ECGWaveSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ECGRecord
+        fields = ["ecg_wave"]
 
 class ECGFileSerializer(serializers.ModelSerializer):
-    record_count = serializers.IntegerField(source="records.count", read_only=True)
+    record_count = serializers.IntegerField(source="total_records", read_only=True)
 
     class Meta:
         model = ECGFile

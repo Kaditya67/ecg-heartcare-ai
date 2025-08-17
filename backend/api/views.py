@@ -9,6 +9,7 @@ from .models import ECGFile, ECGRecord, ECGLabel
 from .serializers import ECGRecordSerializer, ECGFileSerializer, ECGWaveSerializer, ECGRecordDetailSerializer
 from .utils.redis_client import set_ecg_wave, get_ecg_wave, preload_page_waves
 import json
+from django.db import IntegrityError
 
 # ---------------------------
 # File Upload
@@ -19,7 +20,10 @@ class FileUploadView(APIView):
         if not file:
             return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ecg_file = ECGFile.objects.create(file_name=file.name, status="processing")
+        try:
+            ecg_file = ECGFile.objects.create(file_name=file.name, status="processing")
+        except IntegrityError:
+            return Response({"error": "A file with this name already exists."}, status=400)
 
         try:
             if file.name.endswith(".csv"):
@@ -225,3 +229,91 @@ def bulk_label_update_view(request):
         return Response({"updated": updated, "errors": errors}, status=status.HTTP_207_MULTI_STATUS)
 
     return Response({"updated": updated}, status=status.HTTP_200_OK)
+
+
+# ---------------------------
+# ECGFile ViewSet
+# ---------------------------
+import io
+import pandas as pd
+from django.http import HttpResponse
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from .models import ECGFile, ECGRecord
+from .serializers import ECGFileSerializer, ECGRecordSerializer, ECGRecordDetailSerializer
+
+
+class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
+    """
+    List, retrieve, delete ECG files with record counts.
+    """
+    queryset = ECGFile.objects.all().order_by('-uploaded_at')
+    serializer_class = ECGFileSerializer
+
+    @action(detail=True, methods=['get'])
+    def records(self, request, pk=None):
+        try:
+            ecg_file = self.get_object()
+        except ECGFile.DoesNotExist:
+            return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        records = ECGRecord.objects.filter(file=ecg_file)
+        serializer = ECGRecordSerializer(records, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def records_detail(self, request, pk=None):
+        try:
+            ecg_file = self.get_object()
+        except ECGFile.DoesNotExist:
+            return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        records = ECGRecord.objects.filter(file=ecg_file)
+        serializer = ECGRecordDetailSerializer(records, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'], url_path='download_records/csv')
+    def download_records_csv(self, request, pk=None):
+        ecg_file = self.get_object()
+        records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
+
+        data = [{
+            'ID': idx + 1,  # 1-based index
+            'Patient ID': record.patient_id,
+            'Heart Rate': record.heart_rate,
+            'EcgWave': record.ecg_wave,
+            'Label': record.label.value if record.label else ''
+        } for idx, record in enumerate(records_qs)]
+
+        df = pd.DataFrame(data)
+        csv_data = df.to_csv(index=False)
+        response = HttpResponse(csv_data, content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="{ecg_file.file_name}_records.csv"'
+        return response
+
+    @action(detail=True, methods=['get'], url_path='download_records/xlsx')
+    def download_records_xlsx(self, request, pk=None):
+        ecg_file = self.get_object()
+        records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
+
+        data = [{
+            'ID': idx + 1,  # 1-based index
+            'Patient ID': record.patient_id,
+            'Heart Rate': record.heart_rate,
+            'EcgWave': record.ecg_wave,
+            'Label': record.label.value if record.label else ''
+        } for idx, record in enumerate(records_qs)]
+
+        df = pd.DataFrame(data)
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='ECG Records')
+        output.seek(0)
+        response = HttpResponse(
+            output.read(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="{ecg_file.file_name}_records.xlsx"'
+        return response

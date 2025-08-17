@@ -7,6 +7,11 @@ from .views import (
     get_ecg_wave_view,
     bulk_label_update_view,
     ECGFileViewSet,
+    LabelCountView,
+    PatientCountView,
+    ECGCustomExportView,
+    ECGFileSummaryView,
+    LabelsPatientsByFilesView,
 )
 
 router = DefaultRouter()
@@ -19,4 +24,9 @@ urlpatterns = [
     path('records/<int:pk>/', ECGRecordDetailView.as_view(), name='record-detail'),
     path('records/<int:record_id>/wave/', get_ecg_wave_view, name='get_ecg_wave'),
     path('records/bulk-label/', bulk_label_update_view, name='bulk-label'),
+    path('labels/count/', LabelCountView.as_view(), name='labels-count'),
+    path('patients/count/', PatientCountView.as_view(), name='patients-count'),
+    path('ecgrecords/export/', ECGCustomExportView.as_view(), name='ecg-custom-export'),
+    path('files/summary/', ECGFileSummaryView.as_view(), name='ecgfile-summary'),  # Use this to fetch file list and summary
+    path('ecgrecords/labels-patients-by-files/', LabelsPatientsByFilesView.as_view(), name='labels-patients-by-files'),
 ]

@@ -3,6 +3,7 @@ import API from '../api/api';
 import ECGCharts from '../components/ECGCharts';
 import DashboardNavbar from '../components/DashboardNavbar';
 import { ThemeContext } from '../components/context/ThemeContext';
+import Footer from '../components/Footer';
 
 function useDebounce(value, delay) {
   const [debounced, setDebounced] = useState(value);
@@ -164,21 +165,36 @@ const PaginatedDataPage = () => {
   const getLabelName = (patientId, recordId, rawLabel) => {
     if (changedLabels[patientId]?.[recordId] !== undefined) {
       const changedValue = changedLabels[patientId][recordId];
-      return labelOptions.find((opt) => opt.value === changedValue)?.name || 'Not Labeled';
+      return labelOptions.find((opt) => opt.value === changedValue)?.name || '--Not Labeled--';
     }
     if (rawLabel && typeof rawLabel === 'object' && rawLabel.name) {
       return rawLabel.name;
     }
-    return rawLabel ?? 'Not Labeled';
+    return rawLabel ?? '--Not Labeled--';
   };
 
   const getCurrentLabel = (patientId, recordId, defaultLabel) => {
-    return changedLabels[patientId]?.[recordId] ?? defaultLabel ?? 'Not Labeled';
+    return changedLabels[patientId]?.[recordId] ?? defaultLabel ?? '--Not Labeled--';
   };
 
   return (
-    <>
-      <DashboardNavbar />
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: '100vh',
+        }}
+      >
+        <DashboardNavbar />
+        <main
+          style={{
+            flexGrow: 1,
+            padding: '1.5rem',
+            maxWidth: 800,
+            margin: 'auto',
+            width: '100%',
+          }}
+        >
       <div
         className="max-w-6xl mx-auto p-6 space-y-6"
         style={{ backgroundColor: 'var(--bg)', color: 'var(--text)', minHeight: '100vh' }}
@@ -248,22 +264,6 @@ const PaginatedDataPage = () => {
               </div>
 
               <div className="w-full md:w-64 border-l border-[var(--border)] pl-4 space-y-5">
-
-                <div className="text-sm text-[var(--text)] space-y-1">
-                  <p>
-                    <strong>Heart Rate:</strong> {plotRow.heart_rate || 'Unknown'}
-                  </p>
-                  <p>
-                    <strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}
-                  </p>
-                  <p>
-                    <strong>Source:</strong> {plotRow.source || 'Unknown'}
-                  </p>
-                  <p>
-                    <strong>Total Points:</strong> {ecgArray.length}
-                  </p>
-                </div>
-
                 {labelOptions.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {labelOptions.map((opt) => {
@@ -284,6 +284,20 @@ const PaginatedDataPage = () => {
                     })}
                   </div>
                 )}
+                <div className="text-sm text-[var(--text)] space-y-1">
+                  <p>
+                    <strong>Heart Rate:</strong> {plotRow.heart_rate || 'Unknown'}
+                  </p>
+                  <p>
+                    <strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}
+                  </p>
+                  <p>
+                    <strong>Source:</strong> {plotRow.source || 'Unknown'}
+                  </p>
+                  <p>
+                    <strong>Total Points:</strong> {ecgArray.length}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -406,7 +420,9 @@ const PaginatedDataPage = () => {
           </>
         )}
       </div>
-    </>
+      </main>
+      <Footer />
+    </div>
   );
 };
 

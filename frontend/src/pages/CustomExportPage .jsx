@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import API from '../api/api';
 import DashboardNavbar from '../components/DashboardNavbar';
+import Footer from '../components/Footer';
 
 const CustomExportPage = () => {
   const [files, setFiles] = useState([]); // {file_name, total_records, selected, numRecords}
@@ -160,8 +161,23 @@ const CustomExportPage = () => {
 
   return (
     <>
-      <DashboardNavbar />
-      <div className="p-6 max-w-5xl mx-auto">
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: '100vh',
+        }}
+      >
+        <DashboardNavbar />
+        <main
+          style={{
+            flexGrow: 1,
+            padding: '1.5rem',
+            maxWidth: 800,
+            margin: 'auto',
+            width: '100%',
+          }}
+        >
         <h2 className="text-xl font-bold mb-4">Custom ECG Records Export</h2>
 
         <section className="mb-6">
@@ -280,6 +296,8 @@ const CustomExportPage = () => {
             {exporting ? 'Exporting...' : 'Export XLSX'}
           </button>
         </div>
+      </main>
+        <Footer />
       </div>
     </>
   );

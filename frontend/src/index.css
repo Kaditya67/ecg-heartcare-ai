@@ -37,6 +37,18 @@ body {
   transition: background-color 0.3s, color 0.3s;
 }
 
+/* Apply to the root element that wraps header, content, footer */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;  /* full viewport height */
+}
+
+.page-content {
+  flex-grow: 1;       /* takes all available space pushing footer down */
+}
+
+
 .card {
   background-color: var(--card-bg);
   border: 1px solid var(--border);

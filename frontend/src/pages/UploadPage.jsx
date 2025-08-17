@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import API from '../api/api';
 import DashboardNavbar from '../components/DashboardNavbar';
+import Footer from '../components/Footer';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -94,9 +95,23 @@ const UploadPage = () => {
   };
 
   return (
-    <>
-      <DashboardNavbar />
-      <div className="max-w-4xl mx-auto p-6">
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: '100vh',
+        }}
+      >
+        <DashboardNavbar />
+        <main
+          style={{
+            flexGrow: 1,
+            padding: '1.5rem',
+            maxWidth: 800,
+            margin: 'auto',
+            width: '100%',
+          }}
+        >
         <h2 className="text-2xl font-semibold mb-6">Upload ECG Files</h2>
 
         <div className="border-2 border-dashed border-blue-500 rounded-md p-6 max-w-md mx-auto">
@@ -174,8 +189,9 @@ const UploadPage = () => {
             ))
           )}
         </div>
-      </div>
-    </>
+      </main>
+      <Footer />
+    </div>
   );
 };
 

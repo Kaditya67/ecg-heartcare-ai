@@ -1,0 +1,387 @@
+import React, { useEffect, useState, useContext } from 'react';
+import API from '../api/api';
+import ECGCharts from '../components/ECGCharts';
+import DashboardNavbar from '../components/DashboardNavbar';
+import { ThemeContext } from '../components/context/ThemeContext';
+
+function useDebounce(value, delay) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handler = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+  return debounced;
+}
+
+const PAGE_SIZE = 100;
+const LOCAL_STORAGE_KEY = 'ecg_label_changes';
+
+const PaginatedDataPage = () => {
+  const { theme } = useContext(ThemeContext);
+  const [readyTheme, setReadyTheme] = useState(theme);
+
+  const [data, setData] = useState([]);
+  const [plotRow, setPlotRow] = useState(null);
+  const [labelOptions, setLabelOptions] = useState([]);
+  const [chartType, setChartType] = useState("plotly");
+  const [page, setPage] = useState(1);
+  const [pageCount, setPageCount] = useState(1);
+  const [inputValue, setInputValue] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [loadingPlotId, setLoadingPlotId] = useState(null);
+
+  const [changedLabels, setChangedLabels] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)) || {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+  // Wait a tick AFTER the theme changes, so CSS vars are updated in DOM
+  const handle = setTimeout(() => setReadyTheme(theme), 0); // next event loop
+  return () => clearTimeout(handle);
+}, [theme]);
+
+  const debouncedPage = useDebounce(inputValue, 800);
+
+  useEffect(() => {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(changedLabels));
+  }, [changedLabels]);
+
+  const fetchData = async (pageNum = 1) => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await API.get('/records/', {
+        params: { page: pageNum, page_size: PAGE_SIZE },
+      });
+      const { results, count } = response.data;
+      const lastPage = Math.max(1, Math.ceil(count / PAGE_SIZE));
+      setData(results);
+      setPage(pageNum);
+      setInputValue(pageNum);
+      setPageCount(lastPage);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Error loading data');
+      setPlotRow(null);
+      setLabelOptions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let val = Number(debouncedPage);
+    if (val > pageCount) val = pageCount;
+    if (val < 1 || isNaN(val)) val = 1;
+    if (val !== page) fetchData(val);
+  }, [debouncedPage]);
+
+  useEffect(() => {
+    fetchData(page);
+  }, []);
+
+  const handlePageInputChange = (e) => setInputValue(e.target.value);
+
+  const fetchEcgData = async (id, patientId) => {
+    setLoadingPlotId(id);
+    setError('');
+    try {
+      const response = await API.get(`/records/${id}/wave/`, {
+        params: { patient_id: patientId },
+      });
+      setPlotRow(response.data);
+      if (response.data.label_options) setLabelOptions(response.data.label_options);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Error loading plot data');
+      setPlotRow(null);
+      setLabelOptions([]);
+    } finally {
+      setLoadingPlotId(null);
+    }
+  };
+
+  const handleLabelButtonClick = (patientId, recordId, labelValue) => {
+    setChangedLabels((prev) => ({
+      ...prev,
+      [patientId]: {
+        ...(prev[patientId] || {}),
+        [recordId]: labelValue,
+      },
+    }));
+  };
+
+  const handleSaveLabels = async () => {
+    const payload = [];
+    Object.entries(changedLabels).forEach(([patientId, records]) => {
+      Object.entries(records).forEach(([recordId, label]) => {
+        payload.push({
+          id: Number(recordId),
+          patient_id: patientId,
+          label,
+        });
+      });
+    });
+    try {
+      await API.post('/records/bulk-label/', { records: payload });
+      setChangedLabels({});
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      fetchData(page);
+      if (plotRow) fetchEcgData(plotRow.id, plotRow.patient_id);
+    } catch {
+      alert("Failed to save labels. Try again.");
+    }
+  };
+
+  const navigatePlot = (direction) => {
+    if (!plotRow) return;
+    const currentIndex = data.findIndex((r) => r.id === plotRow.id);
+    if (currentIndex === -1) return;
+    let newIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex >= data.length) newIndex = data.length - 1;
+    const record = data[newIndex];
+    if (record) fetchEcgData(record.id, record.patient_id);
+  };
+
+  let ecgArray = [];
+  if (plotRow && typeof plotRow.ecg_wave === "string") {
+    ecgArray = plotRow.ecg_wave.split(",").map(Number);
+  }
+
+  const hasUnsavedChanges = Object.keys(changedLabels).some(
+    (patientId) => Object.keys(changedLabels[patientId]).length > 0
+  );
+
+  const getLabelName = (patientId, recordId, rawLabel) => {
+    if (changedLabels[patientId]?.[recordId] !== undefined) {
+      const changedValue = changedLabels[patientId][recordId];
+      return labelOptions.find((opt) => opt.value === changedValue)?.name || "Not Labeled";
+    }
+    if (rawLabel && typeof rawLabel === "object" && rawLabel.name) {
+      return rawLabel.name;
+    }
+    return rawLabel ?? "Not Labeled";
+  };
+
+  const getCurrentLabel = (patientId, recordId, defaultLabel) => {
+    return changedLabels[patientId]?.[recordId] ?? defaultLabel ?? "Not Labeled";
+  };
+
+  return (
+    <>
+      <DashboardNavbar />
+      <div
+        className="max-w-6xl mx-auto p-6 space-y-6"
+        style={{ backgroundColor: 'var(--bg)', color: 'var(--text)', minHeight: '100vh' }}
+      >
+        <h2 className="text-2xl font-semibold">ECG Records</h2>
+
+        {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
+
+        {plotRow && ecgArray.length > 0 && (
+          <div className="bg-[var(--card-bg)] shadow rounded-lg border border-[var(--border)] p-6 space-y-6">
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="flex items-center gap-8">
+                  <span className="text-md font-semibold">Record ID: {plotRow.id}</span>
+                  <span className="text-lg font-semibold">Patient ID: {plotRow.patient_id}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => navigatePlot("prev")}
+                  disabled={data.findIndex((r) => r.id === plotRow.id) === 0}
+                  className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  ← Prev
+                </button>
+                <button
+                  onClick={() => navigatePlot("next")}
+                  disabled={data.findIndex((r) => r.id === plotRow.id) === data.length - 1}
+                  className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next →
+                </button>
+                <button
+                  onClick={() => {
+                    setPlotRow(null);
+                    setLabelOptions([]);
+                  }}
+                  className="ml-4 text-[var(--danger)] hover:underline"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-8 items-start">
+              <div className="flex-1 flex flex-col items-center">
+                <div className="mb-3 self-end">
+                  <label className="mr-2">Chart Type:</label>
+                  <select
+                    value={chartType}
+                    onChange={(e) => setChartType(e.target.value)}
+                    className="border rounded p-1 bg-[var(--card-bg)] text-[var(--text)]"
+                  >
+                    <option value="plotly">Plotly</option>
+                    <option value="chartjs">Chart.js</option>
+                    <option value="echarts">ECharts</option>
+                  </select>
+                </div>
+                <div className="w-full" style={{ minHeight: "400px", maxWidth: 900 }}>
+                  <ECGCharts
+                    ecgArray={ecgArray}
+                    chartType={chartType}
+                    theme={readyTheme}
+                    key={readyTheme + chartType}
+                  />
+                </div>
+              </div>
+
+              <div className="w-full md:w-64 border-l border-[var(--border)] pl-4 space-y-5">
+                <button
+                  disabled={!hasUnsavedChanges}
+                  onClick={handleSaveLabels}
+                  className={`w-full px-4 py-2 rounded text-white ${
+                    hasUnsavedChanges ? "bg-[var(--accent)] hover:bg-blue-700" : "bg-gray-400 cursor-not-allowed"
+                  }`}
+                >
+                  Save All Changes
+                </button>
+
+                <div className="text-sm text-[var(--text)] space-y-1">
+                  <p><strong>Heart Rate:</strong> {plotRow.heart_rate || "Unknown"}</p>
+                  <p><strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}</p>
+                  <p><strong>Source:</strong> {plotRow.source || "Unknown"}</p>
+                  <p><strong>Total Points:</strong> {ecgArray.length}</p>
+                </div>
+
+                {labelOptions.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {labelOptions.map((opt) => {
+                      const currentLabel = getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label);
+                      const isSelected = currentLabel === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          className={`px-3 py-1 rounded text-xs font-medium ${
+                            isSelected ? "text-white" : "text-[var(--text)]"
+                          } ${isSelected ? "" : "border"}`}
+                          style={{ backgroundColor: isSelected ? opt.color : "transparent" }}
+                          onClick={() => handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)}
+                        >
+                          {opt.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && (
+          <>
+            <div
+              className="overflow-x-auto border border-[var(--border)] rounded bg-[var(--card-bg)] shadow"
+              style={{ maxHeight: "300px", overflowY: "auto" }}
+            >
+              <table className="min-w-full table-auto text-sm divide-y divide-gray-200">
+                <thead className="bg-[var(--secondary)] sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Record #</th>
+                    <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Patient ID</th>
+                    <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Action</th>
+                    <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Heart Rate</th>
+                    <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Label</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {data.map(({ id, patient_id, heart_rate, label }, idx) => {
+                    const recordNumber = (page - 1) * PAGE_SIZE + idx + 1;
+                    const isChanged = changedLabels[patient_id]?.[id] !== undefined;
+                    const displayLabel = getLabelName(patient_id, id, label);
+                    return (
+                      <tr
+                        key={id}
+                        className={`cursor-pointer hover:bg-[var(--highlight)] ${
+                          idx % 2 === 0 ? "bg-[var(--card-bg)]" : ""
+                        }`}
+                      >
+                        <td className="px-4 py-3 font-mono text-[var(--text)]">{recordNumber}</td>
+                        <td className="px-4 py-3 text-[var(--text)]">{patient_id}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            onClick={() => fetchEcgData(id, patient_id)}
+                            disabled={loadingPlotId !== null}
+                            className={`px-3 py-1 rounded text-white transition ${
+                              loadingPlotId === id
+                                ? "bg-gray-400 cursor-not-allowed"
+                                : "bg-[var(--accent)] hover:bg-blue-700"
+                            }`}
+                            aria-label={`Plot ECG record ${id} for patient ${patient_id}`}
+                          >
+                            {loadingPlotId === id ? "Loading..." : "Plot"}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-center text-[var(--text)]">{heart_rate ?? "N/A"}</td>
+                        <td
+                          className={`px-4 py-3 text-center font-medium ${
+                            isChanged ? "text-green-600" : "text-[var(--text)]"
+                          }`}
+                        >
+                          {displayLabel}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-center items-center gap-6 mt-6 select-none">
+              <button
+                onClick={() => setInputValue(page - 1)}
+                disabled={page <= 1}
+                className="px-5 py-2 border rounded-md bg-[var(--card-bg)] hover:bg-[#e0f2fe] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <div className="flex items-center space-x-2">
+                <label htmlFor="pageInput" className="font-semibold text-[var(--text)]">
+                  Page
+                </label>
+                <input
+                  id="pageInput"
+                  type="number"
+                  min="1"
+                  max={pageCount}
+                  value={inputValue}
+                  onChange={handlePageInputChange}
+                  className="w-20 text-center border border-[var(--border)] rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                  aria-label="Page number input"
+                />
+                <span className="text-[var(--text)]">
+                  of {pageCount}
+                </span>
+              </div>
+              <button
+                onClick={() => setInputValue(page + 1)}
+                disabled={page >= pageCount}
+                className="px-5 py-2 border rounded-md bg-[var(--card-bg)] hover:bg-[#e0f2fe] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+};
+
+export default PaginatedDataPage;

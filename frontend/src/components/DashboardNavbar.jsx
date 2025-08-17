@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useContext } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
+import { ThemeContext } from './context/ThemeContext';
 
 const SunIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none"
@@ -18,32 +19,25 @@ const MoonIcon = () => (
 );
 
 const DashboardNavbar = () => {
+  const { theme, toggleTheme } = useContext(ThemeContext);
   const location = useLocation();
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  const toggleTheme = () => setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
 
   const navLinks = [
     { name: 'Dashboard', path: '/dashboard' },
     { name: 'Upload', path: '/upload' },
-    { name: 'Labels', path: '/labels' },
+    { name: 'EcgLabel', path: '/EcgLabel' },
     { name: 'Stats', path: '/stats' },
   ];
 
   return (
     <nav className="w-full px-6 py-3 flex justify-between items-center bg-[var(--card-bg)] border-b border-[var(--border)]">
-      {/* Left: Logo */}
+      {/* Logo and title */}
       <div className="flex items-center gap-2 text-xl font-bold">
         <Logo className="h-8" />
         ECG Dashboard
       </div>
 
-      {/* Center: Nav Links */}
+      {/* Navigation Links */}
       <div className="hidden md:flex gap-6 text-sm font-medium">
         {navLinks.map(link => (
           <Link
@@ -58,7 +52,7 @@ const DashboardNavbar = () => {
         ))}
       </div>
 
-      {/* Right: Theme & Profile */}
+      {/* Theme toggle and profile */}
       <div className="flex items-center gap-4">
         <button
           onClick={toggleTheme}

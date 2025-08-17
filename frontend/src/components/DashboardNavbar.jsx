@@ -26,7 +26,7 @@ const DashboardNavbar = () => {
     { name: 'Dashboard', path: '/dashboard' },
     { name: 'Files', path: '/upload' },
     { name: 'EcgLabel', path: '/EcgLabel' },
-    { name: 'Custom', path: '/stats' },
+    { name: 'Custom', path: '/custom' },
   ];
 
   return (

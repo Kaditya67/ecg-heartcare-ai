@@ -1,9 +1,9 @@
 import { Routes, Route } from 'react-router-dom';
 import Home from './pages/Home';
-import Labeler from './pages/Labeler';
 import LandingPage from './pages/LandingPage';
 import UploadPage from './pages/UploadPage';
 import PaginatedDataPage from './pages/PaginatedDataPage';
+import CustomExportPage from './pages/CustomExportPage ';
 
 function App() {
   return (
@@ -12,7 +12,7 @@ function App() {
       <Route path="/dashboard" element={<Home />} />
       <Route path="/upload" element={<UploadPage />} />
       <Route path="/EcgLabel" element={<PaginatedDataPage />} />
-      <Route path="/label" element={<Labeler />} />
+      <Route path="/custom" element={<CustomExportPage />} />
     </Routes>
   );
 }

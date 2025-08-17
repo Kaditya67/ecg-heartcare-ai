@@ -1,10 +1,19 @@
 from rest_framework import serializers
-from .models import ECGRecord, ECGFile
+from .models import ECGRecord, ECGFile 
+from .models import ECGLabel, ECGRecord
 
-class ECGRecordSerializer(serializers.ModelSerializer):  
+class ECGLabelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ECGLabel
+        fields = ['id', 'name', 'value', 'color']
+
+class ECGRecordSerializer(serializers.ModelSerializer):
+    label = ECGLabelSerializer(read_only=True)
+
     class Meta:
         model = ECGRecord
-        fields = ["id", "patient_id", "heart_rate", "label"]  # add others as required
+        fields = ["id", "patient_id", "heart_rate", "label"]
+
 
 class ECGRecordDetailSerializer(serializers.ModelSerializer):
     class Meta:

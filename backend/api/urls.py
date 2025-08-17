@@ -14,6 +14,7 @@ from .views import (
     LabelsPatientsByFilesView,
     DashboardSummaryView,
 )
+from .views import RegisterView, LoginView
 
 router = DefaultRouter()
 router.register(r'ecgfiles', ECGFileViewSet, basename='ecgfile')
@@ -31,4 +32,6 @@ urlpatterns = [
     path('files/summary/', ECGFileSummaryView.as_view(), name='ecgfile-summary'),  # Use this to fetch file list and summary
     path('ecgrecords/labels-patients-by-files/', LabelsPatientsByFilesView.as_view(), name='labels-patients-by-files'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('register/', RegisterView.as_view(), name='register'),
+    path('login/', LoginView.as_view(), name='login'),
 ]

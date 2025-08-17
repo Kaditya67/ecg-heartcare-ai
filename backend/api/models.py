@@ -49,3 +49,13 @@ class ECGRecord(models.Model):
     def __str__(self):
         label_name = self.label.name if self.label else "No Label"
         return f"Patient {self.patient_id} - Status: {self.status} - Label: {label_name}"
+
+from django.contrib.auth.models import User
+from django.db import models
+
+class Profile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    is_authorized = models.BooleanField(default=False)  # Admins set this
+
+    def __str__(self):
+        return f"{self.user.username} Profile"

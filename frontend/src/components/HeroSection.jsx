@@ -21,7 +21,6 @@ const HeroSection = () => {
             </button>
           </Link>
         </div>
-
         {/* Animation */}
         <div className="md:w-3/4 w-full max-w-md">
           <Lottie animationData={ecgAnimation} loop autoplay />

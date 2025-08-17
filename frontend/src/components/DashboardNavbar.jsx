@@ -2,6 +2,7 @@ import React, { useEffect, useState, useContext } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
 import { ThemeContext } from './context/ThemeContext';
+import { useNavigate } from 'react-router-dom';
 
 const SunIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none"
@@ -29,12 +30,25 @@ const DashboardNavbar = () => {
     { name: 'Custom', path: '/custom' },
   ];
 
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken'); // If you use this
+    // Optionally clear any user-related state here
+    navigate('/login'); // Redirect after logout
+  };
+
   return (
     <nav className="w-full px-6 py-3 flex justify-between items-center bg-[var(--card-bg)] border-b border-[var(--border)]">
       {/* Logo and title */}
       <div className="flex items-center gap-2 text-xl font-bold">
+        <Link to="/" className="inline-flex items-center gap-2">
+      <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2 cursor-pointer">
         <Logo className="h-8" />
-        ECG Dashboard
+        ECG Labeling
+      </h1>
+    </Link>
       </div>
 
       {/* Navigation Links */}
@@ -61,6 +75,13 @@ const DashboardNavbar = () => {
         >
           {theme === 'dark' ? <MoonIcon /> : <SunIcon />}
         </button>
+        
+        <button
+        onClick={handleLogout}
+        className="px-4 py-2 rounded bg-[var(--danger)] text-white ml-4 shadow hover:bg-red-600 transition"
+      >
+        Logout
+      </button>
 
         <div className="flex items-center gap-2 cursor-pointer">
           <div className="h-8 w-8 rounded-full bg-[var(--accent)] text-white flex items-center justify-center font-semibold">

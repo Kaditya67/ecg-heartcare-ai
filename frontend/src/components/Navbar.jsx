@@ -32,10 +32,12 @@ const Navbar = () => {
   return (
     <nav className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 py-3 backdrop-blur-md bg-[var(--card-bg)]/70 border-b border-[var(--border)] shadow-sm">
       {/* Logo */}
-      <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
+      <Link to="/" className="inline-flex items-center gap-2">
+      <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2 cursor-pointer">
         <Logo className="h-8" />
         ECG Labeling
       </h1>
+    </Link>
 
       {/* Actions */}
       <div className="flex items-center gap-3 text-sm">

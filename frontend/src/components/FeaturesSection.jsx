@@ -1,26 +1,21 @@
 import React, { useState } from 'react';
-import Lottie from 'lottie-react';
-
-import uploadAnim from '../assets/animations/upload.json';
-import labelAnim from '../assets/animations/label.json';
-import progressAnim from '../assets/animations/progress.json';
-import LazyLottie from './LazyLottie';
+import { FiUpload, FiTag, FiTrendingUp } from 'react-icons/fi'; // Example SVG icons
 
 const features = [
   {
     title: 'Upload & View',
     desc: 'Seamlessly upload Excel sheets and instantly visualize ECG plots with intuitive, zoomable graphs. No setup required.',
-    animation: uploadAnim,
+    icon: <FiUpload size={48} color="var(--accent)" style={{ marginBottom: 24 }} />,
   },
   {
     title: 'Smart Labeling',
     desc: 'Label ECG data using predefined sets or custom tags. Tailor it to your research or diagnostic needs with ease.',
-    animation: labelAnim,
+    icon: <FiTag size={48} color="var(--accent)" style={{ marginBottom: 24 }} />,
   },
   {
     title: 'Session Progress',
     desc: 'Track all actions—what’s labeled, skipped, or pending. Stay organized and resume effortlessly.',
-    animation: progressAnim,
+    icon: <FiTrendingUp size={48} color="var(--accent)" style={{ marginBottom: 24 }} />,
   },
 ];
 
@@ -43,10 +38,8 @@ const FeaturesSection = () => {
                 ${selectedIndex === idx ? 'ring-2 ring-[var(--accent)] scale-[1.03]' : ''}
                 hover:scale-[1.03] hover:shadow-2xl hover:border-[var(--accent)]`}
             >
-              {/* Animation */}
-              <div className="w-full h-44 sm:h-48 max-w-[240px] z-10 mb-6">
-                <LazyLottie animationData={feature.animation} loop autoplay aria-label={`${feature.title} animation`} />
-              </div>
+              {/* SVG Icon */}
+              <div className="z-10 mb-6">{feature.icon}</div>
 
               {/* Title */}
               <h4 className="text-xl font-semibold mb-3 z-10">{feature.title}</h4>

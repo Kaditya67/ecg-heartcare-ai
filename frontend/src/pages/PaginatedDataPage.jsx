@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useContext } from 'react';
+import React, { useEffect, useState, useCallback, useContext } from 'react';
 import API from '../api/api';
 import ECGCharts from '../components/ECGCharts';
 import DashboardNavbar from '../components/DashboardNavbar';
@@ -23,7 +23,7 @@ const PaginatedDataPage = () => {
   const [data, setData] = useState([]);
   const [plotRow, setPlotRow] = useState(null);
   const [labelOptions, setLabelOptions] = useState([]);
-  const [chartType, setChartType] = useState("plotly");
+  const [chartType, setChartType] = useState('plotly');
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(1);
   const [inputValue, setInputValue] = useState(1);
@@ -40,10 +40,10 @@ const PaginatedDataPage = () => {
   });
 
   useEffect(() => {
-  // Wait a tick AFTER the theme changes, so CSS vars are updated in DOM
-  const handle = setTimeout(() => setReadyTheme(theme), 0); // next event loop
-  return () => clearTimeout(handle);
-}, [theme]);
+    // Wait a tick AFTER the theme changes, so CSS vars are updated in DOM
+    const handle = setTimeout(() => setReadyTheme(theme), 0);
+    return () => clearTimeout(handle);
+  }, [theme]);
 
   const debouncedPage = useDebounce(inputValue, 800);
 
@@ -51,7 +51,7 @@ const PaginatedDataPage = () => {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(changedLabels));
   }, [changedLabels]);
 
-  const fetchData = async (pageNum = 1) => {
+  const fetchData = useCallback(async (pageNum = 1) => {
     setLoading(true);
     setError('');
     try {
@@ -71,18 +71,18 @@ const PaginatedDataPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     let val = Number(debouncedPage);
     if (val > pageCount) val = pageCount;
     if (val < 1 || isNaN(val)) val = 1;
     if (val !== page) fetchData(val);
-  }, [debouncedPage]);
+  }, [debouncedPage, fetchData, page, pageCount]);
 
   useEffect(() => {
     fetchData(page);
-  }, []);
+  }, [fetchData, page]);
 
   const handlePageInputChange = (e) => setInputValue(e.target.value);
 
@@ -132,15 +132,20 @@ const PaginatedDataPage = () => {
       fetchData(page);
       if (plotRow) fetchEcgData(plotRow.id, plotRow.patient_id);
     } catch {
-      alert("Failed to save labels. Try again.");
+      alert('Failed to save labels. Try again.');
     }
+  };
+
+  const handleClearChanges = () => {
+    setChangedLabels({});
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
   };
 
   const navigatePlot = (direction) => {
     if (!plotRow) return;
     const currentIndex = data.findIndex((r) => r.id === plotRow.id);
     if (currentIndex === -1) return;
-    let newIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
+    let newIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
     if (newIndex < 0) newIndex = 0;
     if (newIndex >= data.length) newIndex = data.length - 1;
     const record = data[newIndex];
@@ -148,8 +153,8 @@ const PaginatedDataPage = () => {
   };
 
   let ecgArray = [];
-  if (plotRow && typeof plotRow.ecg_wave === "string") {
-    ecgArray = plotRow.ecg_wave.split(",").map(Number);
+  if (plotRow && typeof plotRow.ecg_wave === 'string') {
+    ecgArray = plotRow.ecg_wave.split(',').map(Number);
   }
 
   const hasUnsavedChanges = Object.keys(changedLabels).some(
@@ -159,16 +164,16 @@ const PaginatedDataPage = () => {
   const getLabelName = (patientId, recordId, rawLabel) => {
     if (changedLabels[patientId]?.[recordId] !== undefined) {
       const changedValue = changedLabels[patientId][recordId];
-      return labelOptions.find((opt) => opt.value === changedValue)?.name || "Not Labeled";
+      return labelOptions.find((opt) => opt.value === changedValue)?.name || 'Not Labeled';
     }
-    if (rawLabel && typeof rawLabel === "object" && rawLabel.name) {
+    if (rawLabel && typeof rawLabel === 'object' && rawLabel.name) {
       return rawLabel.name;
     }
-    return rawLabel ?? "Not Labeled";
+    return rawLabel ?? 'Not Labeled';
   };
 
   const getCurrentLabel = (patientId, recordId, defaultLabel) => {
-    return changedLabels[patientId]?.[recordId] ?? defaultLabel ?? "Not Labeled";
+    return changedLabels[patientId]?.[recordId] ?? defaultLabel ?? 'Not Labeled';
   };
 
   return (
@@ -193,14 +198,14 @@ const PaginatedDataPage = () => {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => navigatePlot("prev")}
+                  onClick={() => navigatePlot('prev')}
                   disabled={data.findIndex((r) => r.id === plotRow.id) === 0}
                   className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   ← Prev
                 </button>
                 <button
-                  onClick={() => navigatePlot("next")}
+                  onClick={() => navigatePlot('next')}
                   disabled={data.findIndex((r) => r.id === plotRow.id) === data.length - 1}
                   className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -232,7 +237,7 @@ const PaginatedDataPage = () => {
                     <option value="echarts">ECharts</option>
                   </select>
                 </div>
-                <div className="w-full" style={{ minHeight: "400px", maxWidth: 900 }}>
+                <div className="w-full" style={{ minHeight: '400px', maxWidth: 900 }}>
                   <ECGCharts
                     ecgArray={ecgArray}
                     chartType={chartType}
@@ -243,21 +248,20 @@ const PaginatedDataPage = () => {
               </div>
 
               <div className="w-full md:w-64 border-l border-[var(--border)] pl-4 space-y-5">
-                <button
-                  disabled={!hasUnsavedChanges}
-                  onClick={handleSaveLabels}
-                  className={`w-full px-4 py-2 rounded text-white ${
-                    hasUnsavedChanges ? "bg-[var(--accent)] hover:bg-blue-700" : "bg-gray-400 cursor-not-allowed"
-                  }`}
-                >
-                  Save All Changes
-                </button>
 
                 <div className="text-sm text-[var(--text)] space-y-1">
-                  <p><strong>Heart Rate:</strong> {plotRow.heart_rate || "Unknown"}</p>
-                  <p><strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}</p>
-                  <p><strong>Source:</strong> {plotRow.source || "Unknown"}</p>
-                  <p><strong>Total Points:</strong> {ecgArray.length}</p>
+                  <p>
+                    <strong>Heart Rate:</strong> {plotRow.heart_rate || 'Unknown'}
+                  </p>
+                  <p>
+                    <strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}
+                  </p>
+                  <p>
+                    <strong>Source:</strong> {plotRow.source || 'Unknown'}
+                  </p>
+                  <p>
+                    <strong>Total Points:</strong> {ecgArray.length}
+                  </p>
                 </div>
 
                 {labelOptions.length > 0 && (
@@ -269,9 +273,9 @@ const PaginatedDataPage = () => {
                         <button
                           key={opt.value}
                           className={`px-3 py-1 rounded text-xs font-medium ${
-                            isSelected ? "text-white" : "text-[var(--text)]"
-                          } ${isSelected ? "" : "border"}`}
-                          style={{ backgroundColor: isSelected ? opt.color : "transparent" }}
+                            isSelected ? 'text-white' : `text-[var(--text)] border`
+                          }`}
+                          style={{ backgroundColor: isSelected ? opt.color : 'transparent' }}
                           onClick={() => handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)}
                         >
                           {opt.name}
@@ -285,20 +289,46 @@ const PaginatedDataPage = () => {
           </div>
         )}
 
+        {/* CHANGES CONTROL BUTTONS HERE, OUTSIDE THE CHART */}
+      <div className="flex space-x-2 mb-6">
+        <button
+          disabled={!hasUnsavedChanges}
+          onClick={handleSaveLabels}
+          className={`px-4 py-2 rounded text-white ${
+            hasUnsavedChanges
+              ? 'bg-[var(--accent)] hover:bg-blue-700'
+              : 'bg-gray-400 cursor-not-allowed'
+          }`}
+        >
+          {hasUnsavedChanges ? '(Unsaved Changes)' : 'Saved'}
+        </button>
+        <button
+          disabled={!hasUnsavedChanges}
+          onClick={handleClearChanges}
+          className={`px-4 py-2 rounded text-white ${
+            hasUnsavedChanges
+              ? 'bg-red-500 hover:bg-red-600'
+              : 'bg-gray-400 cursor-not-allowed'
+          }`}
+        >
+          Clear Changes
+        </button>
+      </div>
+
         {!loading && !error && (
           <>
             <div
               className="overflow-x-auto border border-[var(--border)] rounded bg-[var(--card-bg)] shadow"
-              style={{ maxHeight: "300px", overflowY: "auto" }}
+              style={{ maxHeight: '300px', overflowY: 'auto' }}
             >
               <table className="min-w-full table-auto text-sm divide-y divide-gray-200">
                 <thead className="bg-[var(--secondary)] sticky top-0 z-10">
                   <tr>
-                    <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Record #</th>
+                    <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Record</th>
                     <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Patient ID</th>
-                    <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Action</th>
                     <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Heart Rate</th>
                     <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Label</th>
+                    <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -310,32 +340,30 @@ const PaginatedDataPage = () => {
                       <tr
                         key={id}
                         className={`cursor-pointer hover:bg-[var(--highlight)] ${
-                          idx % 2 === 0 ? "bg-[var(--card-bg)]" : ""
+                          idx % 2 === 0 ? 'bg-[var(--card-bg)]' : ''
                         }`}
                       >
                         <td className="px-4 py-3 font-mono text-[var(--text)]">{recordNumber}</td>
                         <td className="px-4 py-3 text-[var(--text)]">{patient_id}</td>
+                        <td className="px-4 py-3 text-center text-[var(--text)]">{heart_rate ?? 'N/A'}</td>
+                        <td
+                          className={`px-4 py-3 text-center font-medium ${
+                            isChanged ? 'text-green-600' : 'text-[var(--text)]'
+                          }`}
+                        >
+                          {displayLabel}
+                        </td>
                         <td className="px-4 py-3 text-center">
                           <button
                             onClick={() => fetchEcgData(id, patient_id)}
                             disabled={loadingPlotId !== null}
                             className={`px-3 py-1 rounded text-white transition ${
-                              loadingPlotId === id
-                                ? "bg-gray-400 cursor-not-allowed"
-                                : "bg-[var(--accent)] hover:bg-blue-700"
+                              loadingPlotId === id ? 'bg-gray-400 cursor-not-allowed' : 'bg-[var(--accent)] hover:bg-blue-700'
                             }`}
                             aria-label={`Plot ECG record ${id} for patient ${patient_id}`}
                           >
-                            {loadingPlotId === id ? "Loading..." : "Plot"}
+                            {loadingPlotId === id ? 'Loading...' : 'Plot'}
                           </button>
-                        </td>
-                        <td className="px-4 py-3 text-center text-[var(--text)]">{heart_rate ?? "N/A"}</td>
-                        <td
-                          className={`px-4 py-3 text-center font-medium ${
-                            isChanged ? "text-green-600" : "text-[var(--text)]"
-                          }`}
-                        >
-                          {displayLabel}
                         </td>
                       </tr>
                     );
@@ -365,9 +393,7 @@ const PaginatedDataPage = () => {
                   className="w-20 text-center border border-[var(--border)] rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                   aria-label="Page number input"
                 />
-                <span className="text-[var(--text)]">
-                  of {pageCount}
-                </span>
+                <span className="text-[var(--text)]">of {pageCount}</span>
               </div>
               <button
                 onClick={() => setInputValue(page + 1)}

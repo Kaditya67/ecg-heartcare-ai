@@ -1,17 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import API from '../api/api';
 import { useNavigate, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
+import { ThemeContext } from '../components/context/ThemeContext';
 
 const LoginPage = () => {
+  const { theme } = useContext(ThemeContext);
   const [form, setForm] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleChange = e => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
+  const handleChange = e => setForm({ ...form, [e.target.name]: e.target.value });
 
   const handleSubmit = async e => {
     e.preventDefault();
@@ -21,8 +21,8 @@ const LoginPage = () => {
       const res = await API.post('/login/', form);
       localStorage.setItem('accessToken', res.data.access);
       localStorage.setItem('refreshToken', res.data.refresh);
-      navigate('/dashboard'); // Redirect after login
-    } catch (err) {
+      navigate('/dashboard');
+    } catch {
       setError('Login failed: Invalid username or password');
     } finally {
       setLoading(false);
@@ -32,18 +32,23 @@ const LoginPage = () => {
   return (
     <>
       <Navbar />
-      <div style={styles.pageContainer}>
-        <div style={styles.formContainer}>
-          <form onSubmit={handleSubmit} style={styles.form}>
-            <h2 style={styles.title}>Login</h2>
+      <div
+        className="min-h-screen flex items-center justify-center bg-[var(--bg)] text-[var(--text)] px-6"
+      >
+        <div
+          className="max-w-sm w-full bg-[var(--card-bg)] border border-[var(--border)] rounded-lg p-6 shadow-md"
+          style={{ color: theme.text }}
+        >
+          <h2 className="text-2xl font-semibold text-center mb-6">Login</h2>
+          <form className="flex flex-col space-y-4" onSubmit={handleSubmit}>
             <input
               name="username"
               placeholder="Username"
               value={form.username}
               onChange={handleChange}
               required
-              style={styles.input}
               autoComplete="username"
+              className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
             />
             <input
               type="password"
@@ -52,76 +57,28 @@ const LoginPage = () => {
               value={form.password}
               onChange={handleChange}
               required
-              style={styles.input}
               autoComplete="current-password"
+              className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
             />
-            {error && <p style={styles.error}>{error}</p>}
-            <button type="submit" style={styles.button} disabled={loading}>
+            {error && <p className="text-[var(--danger)] text-center text-sm">{error}</p>}
+            <button
+              type="submit"
+              disabled={loading}
+              className="bg-[var(--accent)] text-[var(--btn-text)] py-2 rounded font-semibold shadow hover:bg-[var(--accent-dark)] disabled:opacity-50 disabled:cursor-not-allowed transition text-sm"
+            >
               {loading ? 'Logging in...' : 'Login'}
             </button>
-            <p style={styles.text}>
-              Don&apos;t have an account? <Link to="/signup">Sign Up</Link>
+            <p className="text-center mt-4 text-sm text-[var(--text)]">
+              Don't have an account?{' '}
+              <Link to="/signup" className="text-[var(--accent)] hover:underline font-medium">
+                Sign Up
+              </Link>
             </p>
           </form>
         </div>
       </div>
     </>
   );
-};
-
-const styles = {
-  pageContainer: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: 'calc(100vh - 60px)', // Adjust 60px if navbar height differs
-    padding: 20,
-    backgroundColor: '#fdfdfd',
-  },
-  formContainer: {
-    width: '100%',
-    maxWidth: 400,
-    backgroundColor: 'white',
-    padding: 24,
-    borderRadius: 8,
-    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-    border: '1px solid #ddd',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  title: {
-    marginBottom: 24,
-    textAlign: 'center',
-    color: '#333',
-  },
-  input: {
-    marginBottom: 16,
-    padding: 12,
-    fontSize: 16,
-    borderRadius: 4,
-    border: '1px solid #ccc',
-  },
-  button: {
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: '#007BFF',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
-    cursor: 'pointer',
-  },
-  error: {
-    color: 'crimson',
-    marginBottom: 16,
-    fontSize: 14,
-  },
-  text: {
-    marginTop: 16,
-    fontSize: 14,
-    textAlign: 'center',
-  },
 };
 
 export default LoginPage;

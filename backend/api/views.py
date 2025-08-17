@@ -238,12 +238,14 @@ import io
 import pandas as pd
 from django.http import HttpResponse
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, permission_classes, authentication_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 from rest_framework.response import Response
 from .models import ECGFile, ECGRecord
 from .serializers import ECGFileSerializer, ECGRecordSerializer, ECGRecordDetailSerializer
 
-
+@permission_classes([AllowAny])
 class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
     """
     List, retrieve, delete ECG files with record counts.
@@ -274,6 +276,8 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         return Response(serializer.data)
     
     @action(detail=True, methods=['get'], url_path='download_records/csv')
+    @permission_classes([AllowAny])   # Allow anyone to download CSV
+    @authentication_classes([])       # Disable authentication for this action
     def download_records_csv(self, request, pk=None):
         ecg_file = self.get_object()
         records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
@@ -293,6 +297,8 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         return response
 
     @action(detail=True, methods=['get'], url_path='download_records/xlsx')
+    @permission_classes([AllowAny])   # Allow anyone to download XLSX
+    @authentication_classes([])       # Disable authentication for this action
     def download_records_xlsx(self, request, pk=None):
         ecg_file = self.get_object()
         records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
@@ -317,6 +323,7 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         )
         response['Content-Disposition'] = f'attachment; filename="{ecg_file.file_name}_records.xlsx"'
         return response
+
     
 # backend/views.py
 

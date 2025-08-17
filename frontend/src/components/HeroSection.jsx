@@ -23,7 +23,7 @@ const HeroSection = () => {
         </div>
         {/* Animation */}
         <div className="md:w-3/4 w-full max-w-md">
-          <Lottie animationData={ecgAnimation} loop autoplay />
+          <Lottie key={Date.now()} animationData={JSON.parse(JSON.stringify(ecgAnimation))} loop autoplay />
         </div>
       </div>
     </section>

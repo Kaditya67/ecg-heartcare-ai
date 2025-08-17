@@ -190,7 +190,6 @@ const PaginatedDataPage = () => {
           style={{
             flexGrow: 1,
             padding: '1.5rem',
-            maxWidth: 800,
             margin: 'auto',
             width: '100%',
           }}

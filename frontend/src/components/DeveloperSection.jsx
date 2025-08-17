@@ -8,13 +8,17 @@ const DeveloperSection = () => {
       <div className="max-w-3xl mx-auto">
         {/* Lottie Avatar */}
         <div className="w-28 h-28 sm:w-32 sm:h-32 mx-auto mb-6 rounded-full overflow-hidden shadow-lg">
-          <Lottie animationData={devAnim} loop autoplay className="scale-[1.1]" />
+        <Lottie
+          key={Date.now()}
+          animationData={JSON.parse(JSON.stringify(devAnim))}
+          loop
+          autoplay
+          className="scale-[1.1]"
+        />
         </div>
-
         <h3 className="text-3xl sm:text-4xl font-extrabold mb-4">
           Meet the Developer
         </h3>
-
         <p className="text-base sm:text-lg opacity-90 leading-relaxed px-2">
           Built with <span className="text-[var(--danger)] font-semibold">passion</span> by
           <span className="text-[var(--accent)] font-semibold"> Aditya Ojha</span> — a developer dedicated to building clean, impactful healthtech systems.

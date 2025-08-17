@@ -1,18 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import API from '../api/api';
 import { useNavigate, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
+import { ThemeContext } from '../components/context/ThemeContext';
 
 const SignupPage = () => {
+  const { theme } = useContext(ThemeContext);
   const [form, setForm] = useState({ username: '', password: '' });
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
 
-  const handleChange = e => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
+  const handleChange = e => setForm({ ...form, [e.target.name]: e.target.value });
 
   const handleSubmit = async e => {
     e.preventDefault();
@@ -23,8 +23,8 @@ const SignupPage = () => {
       await API.post('/register/', form);
       setMessage('Registration successful! Redirecting to login...');
       setTimeout(() => navigate('/login'), 2000);
-    } catch (err) {
-      setError('Registration failed: ' + (err.response?.data?.username || 'Please try again.'));
+    } catch {
+      setError('Registration failed: Please try again.');
     } finally {
       setLoading(false);
     }
@@ -33,18 +33,23 @@ const SignupPage = () => {
   return (
     <>
       <Navbar />
-      <div style={styles.pageContainer}>
-        <div style={styles.formContainer}>
-          <form onSubmit={handleSubmit} style={styles.form}>
-            <h2 style={styles.title}>Sign Up</h2>
+      <div
+        className="min-h-screen flex items-center justify-center bg-[var(--bg)] text-[var(--text)] px-6"
+      >
+        <div
+          className="max-w-sm w-full bg-[var(--card-bg)] border border-[var(--border)] rounded-lg p-6 shadow-md"
+          style={{ color: theme.text }}
+        >
+          <h2 className="text-2xl font-semibold text-center mb-6">Sign Up</h2>
+          <form className="flex flex-col space-y-4" onSubmit={handleSubmit}>
             <input
               name="username"
               placeholder="Username"
               value={form.username}
               onChange={handleChange}
               required
-              style={styles.input}
               autoComplete="username"
+              className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
             />
             <input
               type="password"
@@ -53,82 +58,29 @@ const SignupPage = () => {
               value={form.password}
               onChange={handleChange}
               required
-              style={styles.input}
               autoComplete="new-password"
+              className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
             />
-            {error && <p style={styles.error}>{error}</p>}
-            {message && <p style={styles.message}>{message}</p>}
-            <button type="submit" style={styles.button} disabled={loading}>
+            {error && <p className="text-[var(--danger)] text-center text-sm">{error}</p>}
+            {message && <p className="text-[var(--accent)] text-center text-sm">{message}</p>}
+            <button
+              type="submit"
+              disabled={loading}
+              className="bg-[var(--accent)] text-[var(--btn-text)] py-2 rounded font-semibold shadow hover:bg-[var(--accent-dark)] disabled:opacity-50 disabled:cursor-not-allowed transition text-sm"
+            >
               {loading ? 'Registering...' : 'Sign Up'}
             </button>
-            <p style={styles.text}>
-              Already have an account? <Link to="/login">Login</Link>
+            <p className="text-center mt-4 text-sm text-[var(--text)]">
+              Already have an account?{' '}
+              <Link to="/login" className="text-[var(--accent)] hover:underline font-medium">
+                Login
+              </Link>
             </p>
           </form>
         </div>
       </div>
     </>
   );
-};
-
-const styles = {
-  pageContainer: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: 'calc(100vh - 60px)', // Assuming navbar height approx 60px
-    padding: 20,
-    backgroundColor: '#fdfdfd',
-  },
-  formContainer: {
-    width: '100%',
-    maxWidth: 400,
-    border: '1px solid #ddd',
-    borderRadius: 8,
-    padding: 24,
-    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-    backgroundColor: 'white',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  title: {
-    marginBottom: 24,
-    textAlign: 'center',
-    color: '#333',
-  },
-  input: {
-    marginBottom: 16,
-    padding: 12,
-    fontSize: 16,
-    borderRadius: 4,
-    border: '1px solid #ccc',
-  },
-  button: {
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: '#28a745',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
-    cursor: 'pointer',
-  },
-  error: {
-    color: 'crimson',
-    marginBottom: 16,
-    fontSize: 14,
-  },
-  message: {
-    color: 'green',
-    marginBottom: 16,
-    fontSize: 14,
-  },
-  text: {
-    marginTop: 16,
-    fontSize: 14,
-    textAlign: 'center',
-  },
 };
 
 export default SignupPage;

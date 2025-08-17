@@ -12,6 +12,7 @@ from .views import (
     ECGCustomExportView,
     ECGFileSummaryView,
     LabelsPatientsByFilesView,
+    DashboardSummaryView,
 )
 
 router = DefaultRouter()
@@ -29,4 +30,5 @@ urlpatterns = [
     path('ecgrecords/export/', ECGCustomExportView.as_view(), name='ecg-custom-export'),
     path('files/summary/', ECGFileSummaryView.as_view(), name='ecgfile-summary'),  # Use this to fetch file list and summary
     path('ecgrecords/labels-patients-by-files/', LabelsPatientsByFilesView.as_view(), name='labels-patients-by-files'),
+    path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
 ]

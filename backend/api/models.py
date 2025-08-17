@@ -26,7 +26,6 @@ class ECGRecord(models.Model):
     STATUS_CHOICES = [
         ("untouched", "Untouched"),
         ("skipped", "Skipped"),
-        ("marked", "Marked"),
         ("deleted", "Deleted"),
     ]
 

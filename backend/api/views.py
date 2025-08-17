@@ -528,3 +528,48 @@ class ECGFileSummaryView(APIView):
                 'unique_patient_count': patient_count,
             })
         return Response(file_summaries)
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db.models import Count, Q
+from .models import ECGFile, ECGRecord, ECGLabel
+
+
+class DashboardSummaryView(APIView):
+    """
+    Provides summary counts for dashboard display:
+    - total_files
+    - total_records
+    - labelled_records
+    - normal_records
+    - label distribution data
+    """
+
+    def get(self, request):
+        try:
+            total_files = ECGFile.objects.count()
+            total_records = ECGRecord.objects.count()
+            labelled_records = ECGRecord.objects.exclude(label=None).count()
+            normal_records = ECGRecord.objects.filter(label__name="Normal").count()
+
+            # Aggregate counts of records per label
+            labels_data_qs = (
+                ECGLabel.objects
+                .annotate(record_count=Count('ecgrecord'))
+                .values('name', 'record_count')
+            )
+
+            labels_data = {item['name']: item['record_count'] for item in labels_data_qs}
+
+            return Response({
+                "total_files": total_files,
+                "total_records": total_records,
+                "labelled_records": labelled_records,
+                "normal_records": normal_records,
+                "labels_data": labels_data,
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

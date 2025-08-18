@@ -1,20 +1,68 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, generics
-from django.db import transaction
+from rest_framework import status, generics, viewsets
+from rest_framework.decorators import api_view, action, permission_classes, authentication_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.db import transaction, IntegrityError
+from django.db.models import Count
+from django.contrib.auth import authenticate
+from collections import defaultdict
 import pandas as pd
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.decorators import api_view
-from .models import ECGFile, ECGRecord, ECGLabel
-from .serializers import ECGRecordSerializer, ECGFileSerializer, ECGWaveSerializer, ECGRecordDetailSerializer
-from .utils.redis_client import set_ecg_wave, get_ecg_wave, preload_page_waves
+import io
+from django.http import HttpResponse
 import json
-from django.db import IntegrityError
+from django.contrib.auth.models import User
+
+from .models import ECGFile, ECGRecord, ECGLabel
+from .serializers import (
+    ECGRecordSerializer,
+    ECGFileSerializer,
+    ECGWaveSerializer,
+    ECGRecordDetailSerializer,
+    RegisterSerializer,
+)
+from .utils.redis_client import set_ecg_wave, get_ecg_wave
+
+from rest_framework.parsers import JSONParser
 
 # ---------------------------
 # File Upload
 # ---------------------------
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import transaction, IntegrityError
+import pandas as pd
+from .models import ECGFile, ECGRecord
+from .serializers import ECGFileSerializer
+
+# Define canonical column names and their possible aliases
+COLUMN_ALIASES = {
+    "patient_id": ["patient_id", "PatientID", "patientID", "PatientId"],
+    "ecg_wave": ["ecgWave", "ValueStr", "ECG", "Ecgwave"],
+    "heart_rate": ["Heartrate", "Value", "HeartRate", "HR"],
+    "label": ["Label", "label", "Diagnosis", "Class"],
+}
+
+
+def normalize_columns(df):
+    """
+    Rename columns in DataFrame to canonical column names if a match for any aliases is found.
+    """
+    new_columns = {}
+    for canonical_col, aliases in COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in df.columns:
+                new_columns[alias] = canonical_col
+                break
+    df = df.rename(columns=new_columns)
+    return df
+
+
 class FileUploadView(APIView):
+    # permission_classes = [IsAuthenticated]
+
     def post(self, request, format=None):
         file = request.FILES.get("file")
         if not file:
@@ -31,19 +79,23 @@ class FileUploadView(APIView):
             elif file.name.endswith((".xls", ".xlsx")):
                 df = pd.read_excel(file)
             else:
-                return Response({"error": "Invalid file format"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "Invalid file format, expected CSV or Excel file."}, status=status.HTTP_400_BAD_REQUEST)
 
-            required_cols = {"patient_id", "ecgWave", "Heartrate", "Label"}
+            # Normalize columns to canonical form
+            df = normalize_columns(df)
+
+            required_cols = {"patient_id", "ecg_wave", "heart_rate", "label"}
             if not required_cols.issubset(df.columns):
-                return Response({"error": f"Missing columns. Required: {required_cols}"}, status=400)
+                missing = required_cols - set(df.columns)
+                return Response({"error": f"Missing required columns after normalization: {missing}"}, status=400)
 
             records = [
                 ECGRecord(
                     file=ecg_file,
                     patient_id=row["patient_id"],
-                    ecg_wave=row["ecgWave"],   # Assume JSON/list-like
-                    heart_rate=row["Heartrate"],
-                    label=int(row["Label"]) if not pd.isna(row["Label"]) else None,
+                    ecg_wave=row["ecg_wave"],  # expected format string/list
+                    heart_rate=row["heart_rate"],
+                    label=int(row["label"]) if not pd.isna(row["label"]) else None,
                 )
                 for _, row in df.iterrows()
             ]
@@ -62,32 +114,50 @@ class FileUploadView(APIView):
             ecg_file.save()
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 # ---------------------------
 # Paginated Records (with optional wave caching)
-# ---------------------------
+# --------------------------- 
+from django_filters import rest_framework as filters
+from .models import ECGRecord
+
+class ECGRecordFilter(filters.FilterSet):
+    # Use exact param name so frontend and backend match perfectly
+    file__file_name__in = filters.BaseInFilter(field_name='file__file_name', lookup_expr='in')
+
+    class Meta:
+        model = ECGRecord
+        fields = {
+            'patient_id': ['exact'],
+            'label__value': ['exact'],
+            # Do NOT put file__file_name__in or other non-model fields here
+        }
+
+
+from rest_framework import generics
+from .serializers import ECGRecordSerializer
+
 class ECGRecordListView(generics.ListAPIView):
     serializer_class = ECGRecordSerializer
     queryset = ECGRecord.objects.all()
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_class = ECGRecordFilter
 
     def list(self, request, *args, **kwargs):
         include_wave = request.query_params.get("include_wave", "false").lower() == "true"
-        page = self.paginate_queryset(self.get_queryset())
+        page = self.paginate_queryset(self.filter_queryset(self.get_queryset()))
 
-        # Case 1: metadata only
         if not include_wave:
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
 
-        # Case 2: include_wave=true → use Redis and include serialized label info
         data_with_wave = []
         for record in page:
             ecg_wave = get_ecg_wave(record.id)
             if ecg_wave is None:
                 ecg_wave = record.ecg_wave
                 set_ecg_wave(record.id, ecg_wave, timeout=120)
-            
-            label_obj = record.label  # assuming FK to ECGLabel
+
+            label_obj = record.label
             label_data = None
             if label_obj:
                 label_data = {
@@ -103,19 +173,23 @@ class ECGRecordListView(generics.ListAPIView):
                 "heart_rate": record.heart_rate,
                 "label": label_data,
                 "wave_length": len(ecg_wave),
-                "ecg_wave": ecg_wave,  # Only when include_wave=true
+                "ecg_wave": ecg_wave,
             })
 
         return self.get_paginated_response(data_with_wave)
 
+
 class ECGRecordDetailView(generics.RetrieveAPIView):
     queryset = ECGRecord.objects.all()
     serializer_class = ECGRecordDetailSerializer
+    # permission_classes = [IsAuthenticated]
+
 
 # ---------------------------
 # Fetch ECG Wave (per record, uses cache)
-# --------------------------- 
+# ---------------------------
 @api_view(["GET"])
+# @permission_classes([IsAuthenticated])
 def get_ecg_wave_view(request, record_id):
     patient_id = request.query_params.get("patient_id")
 
@@ -124,7 +198,6 @@ def get_ecg_wave_view(request, record_id):
     except ECGRecord.DoesNotExist:
         return Response({"error": "Record not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # Optional: validate patient_id
     if patient_id and str(record.patient_id) != str(patient_id):
         return Response({"error": "Patient ID does not match record"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -136,7 +209,6 @@ def get_ecg_wave_view(request, record_id):
     serializer = ECGWaveSerializer(record)
     ecg_wave_data = serializer.data["ecg_wave"]
 
-    # --- Fetch all available label options ---
     all_labels = ECGLabel.objects.all().order_by('value')
     label_options = [
         {
@@ -153,23 +225,18 @@ def get_ecg_wave_view(request, record_id):
         "id": record_id,
         "patient_id": record.patient_id,
         "heart_rate": record.heart_rate,
-        "label": record.label.value if record.label else None,  # Only value for ML, or send full label as dict if needed
+        "label": record.label.value if record.label else None,
         "ecg_wave": ecg_wave_data,
         "source": "cache" if ecg_wave else "db",
         "label_options": label_options,
     })
 
+
 # ---------------------------
 # Bulk Label Update
 # ---------------------------
-
-from django.db import transaction
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from .models import ECGRecord, ECGLabel
-
 @api_view(["POST"])
+# @permission_classes([IsAuthenticated])
 def bulk_label_update_view(request):
     """
     Bulk update labels for multiple ECG records.
@@ -197,7 +264,6 @@ def bulk_label_update_view(request):
 
     with transaction.atomic():
         for rec in records:
-            print(rec)
             record_id = rec.get("id")
             patient_id = rec.get("patient_id")
             label_value = rec.get("label")
@@ -234,22 +300,8 @@ def bulk_label_update_view(request):
 # ---------------------------
 # ECGFile ViewSet
 # ---------------------------
-import io
-import pandas as pd
-from django.http import HttpResponse
-from rest_framework import viewsets, status
-from rest_framework.decorators import action, permission_classes, authentication_classes
-from rest_framework.permissions import AllowAny
-from rest_framework.authentication import BasicAuthentication, SessionAuthentication
-from rest_framework.response import Response
-from .models import ECGFile, ECGRecord
-from .serializers import ECGFileSerializer, ECGRecordSerializer, ECGRecordDetailSerializer
-
-@permission_classes([AllowAny])
-class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
-    """
-    List, retrieve, delete ECG files with record counts.
-    """
+@permission_classes([AllowAny])  # Allow public access to list/retrieve/delete files as example
+class ECGFileViewSet(viewsets.ModelViewSet):
     queryset = ECGFile.objects.all().order_by('-uploaded_at')
     serializer_class = ECGFileSerializer
 
@@ -274,16 +326,16 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         records = ECGRecord.objects.filter(file=ecg_file)
         serializer = ECGRecordDetailSerializer(records, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'], url_path='download_records/csv')
-    @permission_classes([AllowAny])   # Allow anyone to download CSV
-    @authentication_classes([])       # Disable authentication for this action
+    @permission_classes([AllowAny])
+    @authentication_classes([])
     def download_records_csv(self, request, pk=None):
         ecg_file = self.get_object()
         records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
 
         data = [{
-            'ID': idx + 1,  # 1-based index
+            'ID': idx + 1,
             'Patient ID': record.patient_id,
             'Heart Rate': record.heart_rate,
             'EcgWave': record.ecg_wave,
@@ -297,14 +349,14 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         return response
 
     @action(detail=True, methods=['get'], url_path='download_records/xlsx')
-    @permission_classes([AllowAny])   # Allow anyone to download XLSX
-    @authentication_classes([])       # Disable authentication for this action
+    @permission_classes([AllowAny])
+    @authentication_classes([])
     def download_records_xlsx(self, request, pk=None):
         ecg_file = self.get_object()
         records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
 
         data = [{
-            'ID': idx + 1,  # 1-based index
+            'ID': idx + 1,
             'Patient ID': record.patient_id,
             'Heart Rate': record.heart_rate,
             'EcgWave': record.ecg_wave,
@@ -317,6 +369,7 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='ECG Records')
         output.seek(0)
+
         response = HttpResponse(
             output.read(),
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -324,23 +377,13 @@ class ECGFileViewSet(viewsets.ModelViewSet):  # <-- Changed here to allow DELETE
         response['Content-Disposition'] = f'attachment; filename="{ecg_file.file_name}_records.xlsx"'
         return response
 
-    
-# backend/views.py
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.parsers import JSONParser
-from rest_framework import status
-from django.db.models import Count
-from collections import defaultdict
-import pandas as pd
-import io
-from django.http import HttpResponse
-
-from .models import ECGFile, ECGRecord, ECGLabel
-
-
+# ---------------------------
+# Additional APIViews for Summaries and Counts
+# ---------------------------
 class ECGFileListView(APIView):
+    # permission_classes = [IsAuthenticated]
+
     def get(self, request):
         files = ECGFile.objects.all().annotate(total_records=Count('records'))
         file_list = [
@@ -354,26 +397,22 @@ class ECGFileListView(APIView):
         ]
         return Response(file_list)
 
-
 class LabelsPatientsByFilesView(APIView):
-    parser_classes = [JSONParser]
+    # permission_classes = [IsAuthenticated]
+    # parser_classes = [JSONParser]
 
     def post(self, request):
         file_names = request.data.get('files', [])
         if not file_names:
             return Response({"error": "No files specified."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Exclude records with label name 'No Label' or null label
         records = ECGRecord.objects.filter(file__file_name__in=file_names) \
             .exclude(label__name='No Label') \
             .exclude(label__isnull=True)
 
-        # Label counts among these files excluding 'No Label' and null labels
-        label_counts_qs = (
-            records.values('label_id', 'label__name')
-            .annotate(count=Count('id'))
+        label_counts_qs = records.values('label_id', 'label__name') \
+            .annotate(count=Count('id')) \
             .order_by('label__name')
-        )
         label_counts = [
             {
                 'id': item['label_id'],
@@ -383,12 +422,9 @@ class LabelsPatientsByFilesView(APIView):
             for item in label_counts_qs
         ]
 
-        # Patient counts among these files
-        patient_counts_qs = (
-            records.values('patient_id')
-            .annotate(record_count=Count('id'))
+        patient_counts_qs = records.values('patient_id') \
+            .annotate(record_count=Count('id')) \
             .order_by('patient_id')
-        )
         patient_counts = [
             {
                 'patient_id': item['patient_id'],
@@ -397,14 +433,12 @@ class LabelsPatientsByFilesView(APIView):
             for item in patient_counts_qs
         ]
 
-        return Response({
-            'labels': label_counts,
-            'patients': patient_counts,
-        })
+        return Response({'labels': label_counts, 'patients': patient_counts})
 
 
 class ECGCustomExportView(APIView):
-    parser_classes = [JSONParser]
+    # permission_classes = [IsAuthenticated]
+    # parser_classes = [JSONParser]
 
     def post(self, request):
         files = request.data.get('files', [])
@@ -470,89 +504,72 @@ class ECGCustomExportView(APIView):
             output.seek(0)
             response = HttpResponse(
                 output.read(),
-                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             )
             response['Content-Disposition'] = 'attachment; filename=ecg_custom_export.xlsx'
             return response
-
-        else:  # CSV fallback
+        else:
             csv_data = df.to_csv(index=False)
             response = HttpResponse(csv_data, content_type='text/csv')
             response['Content-Disposition'] = 'attachment; filename=ecg_custom_export.csv'
             return response
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from .models import ECGLabel  # import your model
 
 class LabelCountView(APIView):
+    # permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        # Example logic; adapt as needed
         labels = ECGLabel.objects.all().values('id', 'name')
         return Response(list(labels))
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from .models import ECGRecord
 
 class PatientCountView(APIView):
+    # permission_classes = [IsAuthenticated]
+
     def get(self, request):
         patients = ECGRecord.objects.values('patient_id').annotate(record_count=Count('id')).order_by('patient_id')
-        response = [
-            {'patient_id': p['patient_id'], 'record_count': p['record_count']}
-            for p in patients
-        ]
+        response = [{'patient_id': p['patient_id'], 'record_count': p['record_count']} for p in patients]
         return Response(response)
 
+
 class ECGFileSummaryView(APIView):
+    # permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        print("Fetching ECG file summaries...")
-        files = ECGFile.objects.all().annotate(record_count=Count('records'))
-        file_summaries = []
-        for f in files:
-            records = ECGRecord.objects.filter(file=f)
-            label_counts_qs = records.values('label_id', 'label__name').annotate(count=Count('id'))
+        try:
+            files = ECGFile.objects.all().annotate(record_count=Count('records'))
+            file_summaries = []
+            for f in files:
+                records = ECGRecord.objects.filter(file=f)
+                label_counts_qs = records.values('label_id', 'label__name').annotate(count=Count('id'))
 
-            # Filter out label entries named "No Label"
-            label_counts = [
-                {
-                    'label_id': lc['label_id'],
-                    'label_name': lc['label__name'],
-                    'count': lc['count'],
-                }
-                for lc in label_counts_qs
-                if lc['label__name'] and lc['label__name'] != 'No Label'
-            ]
+                label_counts = [
+                    {
+                        'label_id': lc['label_id'],
+                        'label_name': lc['label__name'],
+                        'count': lc['count']
+                    }
+                    for lc in label_counts_qs if lc['label__name'] and lc['label__name'] != 'No Label'
+                ]
 
-            patient_count = records.values('patient_id').distinct().count()
+                patient_count = records.values('patient_id').distinct().count()
 
-            file_summaries.append({
-                'file_name': f.file_name,
-                'uploaded_at': f.uploaded_at,
-                'status': f.status,
-                'total_records': f.record_count,
-                'label_counts': label_counts,
-                'unique_patient_count': patient_count,
-            })
-        return Response(file_summaries)
+                file_summaries.append({
+                    'file_name': f.file_name,
+                    'uploaded_at': f.uploaded_at,
+                    'status': f.status,
+                    'total_records': f.record_count,
+                    'label_counts': label_counts,
+                    'unique_patient_count': patient_count,
+                })
+            return Response(file_summaries)
 
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.db.models import Count, Q
-from .models import ECGFile, ECGRecord, ECGLabel
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class DashboardSummaryView(APIView):
-    """
-    Provides summary counts for dashboard display:
-    - total_files
-    - total_records
-    - labelled_records
-    - normal_records
-    - label distribution data
-    """
+    # permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
@@ -561,13 +578,7 @@ class DashboardSummaryView(APIView):
             labelled_records = ECGRecord.objects.exclude(label=None).count()
             normal_records = ECGRecord.objects.filter(label__name="Normal").count()
 
-            # Aggregate counts of records per label
-            labels_data_qs = (
-                ECGLabel.objects
-                .annotate(record_count=Count('ecgrecord'))
-                .values('name', 'record_count')
-            )
-
+            labels_data_qs = ECGLabel.objects.annotate(record_count=Count('ecgrecord')).values('name', 'record_count')
             labels_data = {item['name']: item['record_count'] for item in labels_data_qs}
 
             return Response({
@@ -577,14 +588,9 @@ class DashboardSummaryView(APIView):
                 "normal_records": normal_records,
                 "labels_data": labels_data,
             }, status=status.HTTP_200_OK)
-
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAdminUser
-from rest_framework.response import Response
-from django.contrib.auth.models import User
 
 class AuthorizeUserView(APIView):
     permission_classes = [IsAdminUser]
@@ -597,19 +603,19 @@ class AuthorizeUserView(APIView):
             user.profile.save()
             return Response({"authorized": True})
         except User.DoesNotExist:
-            return Response({"error": "User does not exist"}, status=404)
+            return Response({"error": "User does not exist"}, status=status.HTTP_404_NOT_FOUND)
 
 
-from rest_framework import status
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from django.contrib.auth import authenticate
-from .serializers import RegisterSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework import status
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.tokens import RefreshToken
+from .serializers import RegisterSerializer
 
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # Anyone can register
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
@@ -618,11 +624,10 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class LoginView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # Anyone can login
     def post(self, request):
         username = request.data.get('username')
         password = request.data.get('password')
-        print(f"Login attempt for user: {username} with password: {password}")
         user = authenticate(username=username, password=password)
         if user is not None:
             refresh = RefreshToken.for_user(user)
@@ -630,5 +635,4 @@ class LoginView(APIView):
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
             })
-        else:
-            return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)

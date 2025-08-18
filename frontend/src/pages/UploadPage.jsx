@@ -3,7 +3,7 @@ import API from '../api/api';
 import DashboardNavbar from '../components/DashboardNavbar';
 import Footer from '../components/Footer';
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_FILE_SIZE = 1064 * 1024 * 1024; // 400MB
 
 const UploadPage = () => {
   const [files, setFiles] = useState([]);
@@ -45,7 +45,7 @@ const UploadPage = () => {
       return;
     }
     if (selectedFile.size > MAX_FILE_SIZE) {
-      setErrorMsg('File too large! Max size is 50MB.');
+      setErrorMsg('File too large! Max size is 1GB.');
       return;
     }
     setUploading(true);
@@ -117,7 +117,7 @@ const UploadPage = () => {
         <div className="border-2 border-dashed border-blue-500 rounded-md p-6 max-w-md mx-auto">
           <input
             type="file"
-            accept=".csv,.xlsx"
+            accept=".csv,.xlsx, .xls"
             onChange={handleChooseFile}
             className="block w-full text-gray-700 cursor-pointer focus:outline-none"
             ref={fileInputRef}  

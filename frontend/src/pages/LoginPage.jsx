@@ -18,6 +18,7 @@ const LoginPage = () => {
     setLoading(true);
     setError('');
     try {
+      console.log('Logging in with:', form);
       const res = await API.post('/login/', form);
       localStorage.setItem('accessToken', res.data.access);
       localStorage.setItem('refreshToken', res.data.refresh);

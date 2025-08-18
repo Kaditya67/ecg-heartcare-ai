@@ -149,9 +149,4 @@ ecg-labeling-system/
 - More charts
 
 ### Demo of the System
-<iframe
-  src="https://drive.google.com/file/d/1giqB2EaELZ_RCoDTJQc_9VJoIJpz4lQr/preview"
-  width="640"
-  height="480"
-  allow="autoplay">
-</iframe>
+[▶️ Watch Demo Video (Google Drive)](https://drive.google.com/file/d/1giqB2EaELZ_RCoDTJQc_9VJoIJpz4lQr/preview)

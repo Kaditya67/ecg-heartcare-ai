@@ -3,17 +3,18 @@ import API from '../api/api';
 import DashboardNavbar from '../components/DashboardNavbar';
 import Footer from '../components/Footer';
 
-const MAX_FILE_SIZE = 1064 * 1024 * 1024; // 400MB
+const MAX_FILE_SIZE = 1064 * 1024 * 1024; // 1GB
 
 const UploadPage = () => {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [loadingFiles, setLoadingFiles] = useState(false);
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [customName, setCustomName] = useState('');
-  const fileInputRef = useRef(null);  // 1. Create ref
+  const fileInputRef = useRef(null); // 1. Create ref
 
   const fetchFiles = useCallback(async () => {
     setLoadingFiles(true);
@@ -40,6 +41,8 @@ const UploadPage = () => {
 
   const handleFileUpload = async () => {
     setErrorMsg('');
+    setUploadProgress(0);
+
     if (!selectedFile) {
       setErrorMsg('Select a file first!');
       return;
@@ -51,22 +54,29 @@ const UploadPage = () => {
     setUploading(true);
 
     const parts = selectedFile.name.split('.');
-    const ext = parts.pop();         
-    const defaultName = parts.join('.');  
+    const ext = parts.pop();
+    const defaultName = parts.join('.');
     const newName = `${customName || defaultName}.${ext}`;
 
     const fileToUpload = new File([selectedFile], newName, { type: selectedFile.type });
-
     const formData = new FormData();
     formData.append('file', fileToUpload);
 
     try {
-      await API.post('/upload/', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      await API.post('/upload/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            setUploadProgress(Math.round(100 * progressEvent.loaded / progressEvent.total));
+          }
+        }
+      });
       await fetchFiles();
       setSelectedFile(null);
       setCustomName('');
+      setUploadProgress(0);
       if (fileInputRef.current) {
-        fileInputRef.current.value = null;    // 2. Reset file input value
+        fileInputRef.current.value = null; // 2. Reset file input value
       }
     } catch (error) {
       if (error.response && error.response.data) {
@@ -80,7 +90,7 @@ const UploadPage = () => {
   const handleDelete = async (id) => {
     try {
       await API.delete(`/ecgfiles/${id}/`);
-      await fetchFiles();  // await here too!
+      await fetchFiles(); // await here too!
     } catch (error) {
       setErrorMsg('Delete failed, please try again.');
     }
@@ -95,34 +105,32 @@ const UploadPage = () => {
   };
 
   return (
-      <div
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: '100vh',
+      }}
+    >
+      <DashboardNavbar />
+      <main
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: '100vh',
+          flexGrow: 1,
+          padding: '1.5rem',
+          maxWidth: 800,
+          margin: 'auto',
+          width: '100%',
         }}
       >
-        <DashboardNavbar />
-        <main
-          style={{
-            flexGrow: 1,
-            padding: '1.5rem',
-            maxWidth: 800,
-            margin: 'auto',
-            width: '100%',
-          }}
-        >
         <h2 className="text-2xl font-semibold mb-6">Upload ECG Files</h2>
-
         <div className="border-2 border-dashed border-blue-500 rounded-md p-6 max-w-md mx-auto">
           <input
             type="file"
-            accept=".csv,.xlsx, .xls"
+            accept=".csv,.xlsx,.xls"
             onChange={handleChooseFile}
             className="block w-full text-gray-700 cursor-pointer focus:outline-none"
-            ref={fileInputRef}  
+            ref={fileInputRef}
           />
-
           {selectedFile && (
             <div className="mt-4 flex items-center">
               <label className="mr-2 font-medium text-gray-700">Rename file:</label>
@@ -144,10 +152,24 @@ const UploadPage = () => {
               </button>
             </div>
           )}
+
+          {uploading && (
+            <div className="w-full mt-2">
+              <div style={{ background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', height: 10 }}>
+                <div
+                  style={{
+                    width: `${uploadProgress}%`,
+                    background: '#2563eb',
+                    height: 10,
+                    transition: 'width 0.2s',
+                  }}
+                />
+              </div>
+              <div className="text-xs text-gray-600 mt-1 text-right">{uploadProgress}%</div>
+            </div>
+          )}
         </div>
-
         {errorMsg && <p className="mt-4 text-sm text-red-600">{errorMsg}</p>}
-
         <div className="space-y-6 mt-8">
           {loadingFiles ? (
             <p className="text-gray-500">Loading files...</p>
@@ -166,16 +188,10 @@ const UploadPage = () => {
                   </p>
                 </div>
                 <div className="flex gap-3">
-                  <button
-                    onClick={() => handleDownload(file.download_csv_url)}
-                    className="button-normal"
-                  >
+                  <button onClick={() => handleDownload(file.download_csv_url)} className="button-normal">
                     CSV
                   </button>
-                  <button
-                    onClick={() => handleDownload(file.download_xlsx_url)}
-                    className="button-normal"
-                  >
+                  <button onClick={() => handleDownload(file.download_xlsx_url)} className="button-normal">
                     XLS
                   </button>
                   <button

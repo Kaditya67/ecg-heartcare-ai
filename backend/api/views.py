@@ -531,39 +531,45 @@ class PatientCountView(APIView):
         response = [{'patient_id': p['patient_id'], 'record_count': p['record_count']} for p in patients]
         return Response(response)
 
+from collections import defaultdict
+from django.db.models import Count
+
+
+from collections import defaultdict
+from django.db.models import Count
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
 
 class ECGFileSummaryView(APIView):
-    # permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
-            files = ECGFile.objects.all().annotate(record_count=Count('records'))
+            files_qs = ECGFile.objects.annotate(record_count=Count('records'))
+
             file_summaries = []
-            for f in files:
-                records = ECGRecord.objects.filter(file=f)
-                label_counts_qs = records.values('label_id', 'label__name').annotate(count=Count('id'))
+            for f in files_qs:
+                # Get unique patients for this file
+                unique_patients = ECGRecord.objects.filter(file=f).values("patient_id").distinct().count()
 
-                label_counts = [
-                    {
-                        'label_id': lc['label_id'],
-                        'label_name': lc['label__name'],
-                        'count': lc['count']
-                    }
-                    for lc in label_counts_qs if lc['label__name'] and lc['label__name'] != 'No Label'
-                ]
-
-                patient_count = records.values('patient_id').distinct().count()
+                # Get label counts for this file (ignore "No Label")
+                label_counts = (
+                    ECGRecord.objects.filter(file=f)
+                    .exclude(label__name="No Label")
+                    .values("label_id", "label__name")
+                    .annotate(count=Count("id"))
+                )
 
                 file_summaries.append({
-                    'file_name': f.file_name,
-                    'uploaded_at': f.uploaded_at,
-                    'status': f.status,
-                    'total_records': f.record_count,
-                    'label_counts': label_counts,
-                    'unique_patient_count': patient_count,
+                    "file_name": f.file_name,
+                    "uploaded_at": f.uploaded_at,
+                    "status": f.status,
+                    "total_records": f.record_count,
+                    "label_counts": list(label_counts),
+                    "unique_patient_count": unique_patients,
                 })
-            return Response(file_summaries)
 
+            return Response(file_summaries)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

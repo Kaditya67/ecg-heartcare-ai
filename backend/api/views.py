@@ -1,41 +1,31 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, generics, viewsets
-from rest_framework.decorators import api_view, action, permission_classes, authentication_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
-from rest_framework_simplejwt.tokens import RefreshToken
-from django.db import transaction, IntegrityError
-from django.db.models import Count
-from django.contrib.auth import authenticate
-from collections import defaultdict
-import pandas as pd
 import io
-from django.http import HttpResponse
 import json
+from collections import defaultdict
+
+import pandas as pd
+from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
-
-from .models import ECGFile, ECGRecord, ECGLabel
-from .serializers import (
-    ECGRecordSerializer,
-    ECGFileSerializer,
-    ECGWaveSerializer,
-    ECGRecordDetailSerializer,
-    RegisterSerializer,
-)
-from .utils.redis_client import set_ecg_wave, get_ecg_wave
-
+from django.db import IntegrityError, transaction
+from django.db.models import Count
+from django.http import HttpResponse
+from rest_framework import generics, status, viewsets
+from rest_framework.decorators import (action, api_view,
+                                       authentication_classes,
+                                       permission_classes)
 from rest_framework.parsers import JSONParser
-
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
 # ---------------------------
 # File Upload
 # ---------------------------
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.db import transaction, IntegrityError
-import pandas as pd
-from .models import ECGFile, ECGRecord
-from .serializers import ECGFileSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from .models import ECGFile, ECGLabel, ECGRecord
+from .serializers import (ECGFileSerializer, ECGRecordDetailSerializer,
+                          ECGRecordSerializer, ECGWaveSerializer,
+                          RegisterSerializer)
+from .utils.redis_client import get_ecg_wave, set_ecg_wave
 
 # Define canonical column names and their possible aliases
 COLUMN_ALIASES = {
@@ -118,7 +108,9 @@ class FileUploadView(APIView):
 # Paginated Records (with optional wave caching)
 # --------------------------- 
 from django_filters import rest_framework as filters
+
 from .models import ECGRecord
+
 
 class ECGRecordFilter(filters.FilterSet):
     # Use exact param name so frontend and backend match perfectly
@@ -134,7 +126,9 @@ class ECGRecordFilter(filters.FilterSet):
 
 
 from rest_framework import generics
+
 from .serializers import ECGRecordSerializer
+
 
 class ECGRecordListView(generics.ListAPIView):
     serializer_class = ECGRecordSerializer
@@ -532,14 +526,12 @@ class PatientCountView(APIView):
         return Response(response)
 
 from collections import defaultdict
-from django.db.models import Count
 
-
-from collections import defaultdict
 from django.db.models import Count
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 
 class ECGFileSummaryView(APIView):
 
@@ -612,13 +604,15 @@ class AuthorizeUserView(APIView):
             return Response({"error": "User does not exist"}, status=status.HTTP_404_NOT_FOUND)
 
 
-from rest_framework.views import APIView
+from django.contrib.auth import authenticate
+from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework import status
-from django.contrib.auth import authenticate
+from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
+
 from .serializers import RegisterSerializer
+
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]  # Anyone can register

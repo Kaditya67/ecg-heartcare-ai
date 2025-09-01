@@ -153,6 +153,7 @@ const PaginatedDataPage = () => {
       const response = await API.get(`/records/${id}/wave/`, { params: { patient_id: patientId } });
       setPlotRow(response.data);
       if (response.data.label_options) setLabelOptions(response.data.label_options);
+      console.log(response.data.label_options)
     } catch (err) {
       setError(err.response?.data?.detail || err.message || 'Error loading plot data');
       setPlotRow(null);
@@ -352,18 +353,33 @@ const PaginatedDataPage = () => {
                         const currentLabel = getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label);
                         const isSelected = currentLabel === opt.value;
                         return (
-                          <button
-                            key={opt.value}
-                            className={`px-3 py-1 rounded text-xs font-medium ${
-                              isSelected ? 'text-white' : 'text-[var(--text)] border'
-                            }`}
-                            style={{ backgroundColor: isSelected ? opt.color : 'transparent' }}
-                            onClick={() =>
-                              handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)
-                            }
-                          >
-                            {opt.name}
-                          </button>
+                          <div className="relative group inline-block">
+                            <button
+                              key={opt.value}
+                              className={`px-3 py-1 rounded text-xs font-medium ${
+                                isSelected ? 'text-white' : 'text-[var(--text)] border'
+                              }`}
+                              style={{ backgroundColor: isSelected ? opt.color : 'transparent' }}
+                              onClick={() =>
+                                handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)
+                              }
+                            >
+                              {opt.name}
+                            </button>
+
+                            {/* Tooltip */}
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 
+                                            hidden group-hover:flex flex-col items-center z-20">
+                              {/* Bubble */}
+                              <div className="w-64 rounded-lg bg-black text-white text-sm px-3 py-2 
+                                              leading-snug shadow-lg opacity-0 group-hover:opacity-100 
+                                              transition duration-300 ease-out">
+                                {opt.description}
+                              </div>
+                              {/* Arrow */}
+                              <div className="w-3 h-3 bg-black rotate-45 mt-[-6px]"></div>
+                            </div>
+                          </div>
                         );
                       })}
                     </div>

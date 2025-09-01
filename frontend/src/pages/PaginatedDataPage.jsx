@@ -299,7 +299,10 @@
                 <div className="flex justify-between items-center">
                   <div>
                     <div className="flex items-center gap-8">
-                      <span className="text-md font-semibold">Record ID: {plotRow.id}</span>
+                      {/* <span className="text-md font-semibold">Record ID: {plotRow.id}</span> */}
+                      <span className="text-md font-semibold">
+                        Record: { (page - 1) * PAGE_SIZE + data.findIndex(r => r.id === plotRow.id) + 1 }
+                      </span>
                       <span className="text-lg font-semibold">Patient ID: {plotRow.patient_id}</span>
                     </div>
                   </div>
@@ -413,7 +416,7 @@
                 </div>
               </div>
             )}
-            
+
             {/* Settings panel */}
             <div className="flex items-center gap-4 mb-4">
               <label className="flex items-center gap-2 text-sm">

@@ -636,3 +636,54 @@ class LoginView(APIView):
                 'access': str(refresh.access_token),
             })
         return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+import torch
+import json
+from .models_loader import MODEL_MAP
+import pdb
+
+loaded_models = {}
+class PredictECGView(APIView):
+    def post(self, request):
+        data = request.data
+        model_name = data.get('model_name')
+        input_data = data.get('input')
+
+        if model_name not in MODEL_MAP:
+            return Response({'error': f'Model "{model_name}" not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        model_info = MODEL_MAP[model_name]
+        expected_size = model_info['input_size']
+
+        if input_data is None or len(input_data) != expected_size:
+            return Response({'error': f'Input must be a list of {expected_size} floats.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Load model if not already cached
+        if model_name not in loaded_models:
+            model_class = model_info['class']
+            num_classes = model_info['num_classes']
+            model_path = model_info['path']
+
+            model = model_class(num_classes)
+            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            model.eval()
+            loaded_models[model_name] = model
+        else:
+            model = loaded_models[model_name]
+
+        # Preprocess input
+        input_tensor = torch.tensor(input_data, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1, 1, 2604)
+
+        with torch.no_grad():
+            logits = model(input_tensor)
+            pred_class = torch.argmax(logits, dim=1).item()
+            probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()[0]
+
+        return Response({
+            'predicted_class': pred_class,
+            'probabilities': probs
+        })

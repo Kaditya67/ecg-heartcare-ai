@@ -13,6 +13,7 @@ from .views import (
     ECGFileSummaryView,
     LabelsPatientsByFilesView,
     DashboardSummaryView,
+    PredictECGView
 )
 from .views import RegisterView, LoginView
 
@@ -34,4 +35,6 @@ urlpatterns = [
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', LoginView.as_view(), name='login'),
+    path('predict-ecg/', PredictECGView.as_view(), name='predict-ecg'),
 ]
+

@@ -6,6 +6,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         labels = [
+            (-1, "Noise", "#111114",
+             "This is Garbage for our model"),
+
+            (0, "Normal", "#22C55E",
+             "This is the normal ecg"),
+
             (1, "PAC", "#1f77b4",
              "Premature Atrial Contractions (PACs)"
              "Clinical: Early atrial beats that disrupt normal rhythm. "

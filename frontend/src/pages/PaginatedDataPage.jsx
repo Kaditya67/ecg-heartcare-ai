@@ -4,6 +4,7 @@
   import DashboardNavbar from '../components/DashboardNavbar';
   import { ThemeContext } from '../components/context/ThemeContext';
   import Footer from '../components/Footer';
+  import { FaFilter, FaSave, FaTrash } from 'react-icons/fa';
 
   function useDebounce(value, delay) {
     const [debounced, setDebounced] = useState(value);
@@ -22,8 +23,8 @@
     const [readyTheme, setReadyTheme] = useState(theme);
 
     // Features
-    const [autoMove, setAutoMove] = useState(false);
-    const [showDescription, setShowDescription] = useState(true);
+    const [autoMove, setAutoMove] = useState(true);
+    const [showDescription, setShowDescription] = useState(false);
 
 
     // File and data states
@@ -42,6 +43,10 @@
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [loadingPlotId, setLoadingPlotId] = useState(null);
+    const [models, setModels] = useState({});
+    const [selectedModels, setSelectedModels] = useState([]);
+    const [evalMode, setEvalMode] = useState(false);
+    const [prediction, setPrediction] = useState(null);
 
     // Track label changes
     const [changedLabels, setChangedLabels] = useState(() => {
@@ -65,6 +70,21 @@
         })
         .catch(() => setError('Failed to load files.'));
     }, []);
+
+    useEffect(() => {
+      if (evalMode) {
+        API.get("/model_list/")
+          .then((resp) => {
+            setModels(resp.data); // { modelName: {...}, ... }
+            console.log("Models fetched:", resp.data);
+          })
+          .catch((error) => setError("Error fetching models: " + error.message));
+      } else {
+        setModels({}); // clear models when Eval Mode is off
+        setSelectedModels(""); // reset selection
+      }
+    }, [evalMode]);
+
 
     // Sync theme variable asynchronously for style updates
     useEffect(() => {
@@ -92,6 +112,7 @@
       fetchData(page, lastSelectedFilesRef.current);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page]);
+    
 
     // Store which files were selected on last apply so pagination uses them
     const [lastSelectedFiles, setLastSelectedFiles] = useState([]);
@@ -148,7 +169,7 @@
       setLastSelectedFiles(selectedFileNames); // Save for further pagination
       fetchData(1, selectedFileNames);
     };
-
+    
     const handlePageInputChange = (e) => setInputValue(e.target.value);
 
     const fetchEcgData = async (id, patientId) => {
@@ -261,36 +282,82 @@
               )}
             </section>
 
-            {/* Change controls */}
-            <div className="flex space-x-4 mb-6">
-              <button
-                onClick={applyFileFilter}
-                disabled={files.filter(f => f.selected).length === 0}
-                className="px-4 py-2 rounded text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Apply File Filter
-              </button>
+            <div className="flex justify-between items-center mb-6 gap-6">
+              {/* Left Side: File Filter + Model Selector */}
+              <div className="flex items-center gap-4">
+                {/* Apply File Filter */}
+                <button
+                  onClick={applyFileFilter}
+                  disabled={files.filter(f => f.selected).length === 0}
+                  className="flex items-center gap-2 px-4 py-2 rounded-md 
+                            bg-blue-600 hover:bg-blue-700 text-white 
+                            disabled:opacity-50 disabled:cursor-not-allowed
+                            dark:bg-blue-500 dark:hover:bg-blue-600"
+                  title="Apply File Filter"
+                >
+                  <FaFilter /> Apply Filter
+                </button>
 
-              <button
-                onClick={handleSaveLabels}
-                disabled={!hasUnsavedChanges}
-                className={`px-4 py-2 rounded text-white ${
-                  hasUnsavedChanges ? 'bg-[var(--accent)] hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'
-                }`}
-              >
-                {hasUnsavedChanges ? '(Unsaved Changes)' : 'Saved'}
-              </button>
+                {/* Model Select */}
+                {evalMode && (
+                <div>
+                  {/* <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Select Model
+                  </label> */}
+                  <select
+                    value={selectedModels}
+                    onChange={(e) => setSelectedModels(e.target.value)}
+                    className="border border-gray-300 dark:border-gray-600 
+                              rounded-md p-2 
+                              focus:ring-2 focus:ring-blue-500 focus:border-blue-500 
+                              text-sm bg-white dark:bg-gray-800 
+                              text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="" disabled>
+                      -- Choose a model --
+                    </option>
+                    {Object.entries(models).map(([name, info]) => (
+                      <option key={name} value={name}>
+                        {info.label} ({info.num_classes} classes)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              </div>
 
-              <button
-                onClick={handleClearChanges}
-                disabled={!hasUnsavedChanges}
-                className={`px-4 py-2 rounded text-white ${
-                  hasUnsavedChanges ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-400 cursor-not-allowed'
-                }`}
-              >
-                Clear Changes
-              </button>
+              {/* Right Side: Save & Clear */}
+              <div className="flex gap-3">
+              
+                {/* Save Labels */}
+                <button
+                  onClick={handleSaveLabels}
+                  disabled={!hasUnsavedChanges}
+                  className={`p-3 rounded-full text-white relative group transition-colors
+                    ${hasUnsavedChanges
+                      ? "bg-[var(--accent)] hover:bg-blue-700 dark:hover:bg-blue-600"
+                      : "bg-gray-400 dark:bg-gray-600 cursor-not-allowed"}`}
+                  title="Save Changes"
+                >
+                  <FaSave />
+                </button>
+
+                {/* Clear Changes */}
+                <button
+                  onClick={handleClearChanges}
+                  disabled={!hasUnsavedChanges}
+                  className={`p-3 rounded-full text-white relative group transition-colors
+                    ${hasUnsavedChanges
+                      ? "bg-red-500 hover:bg-red-600 dark:bg-red-400 dark:hover:bg-red-500"
+                      : "bg-gray-400 dark:bg-gray-600 cursor-not-allowed"}`}
+                  title="Clear Changes"
+                >
+                  <FaTrash />
+                </button>
+              </div>
             </div>
+
+
             {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
 
             {plotRow && ecgArray.length > 0 && (
@@ -359,6 +426,68 @@
                   </div>
 
                   <div className="w-full md:w-64 border-l border-[var(--border)] pl-4 space-y-5">
+                     {/* Predict ECG Button + Result */}
+                      {evalMode && (
+                        <div className="mb-4">
+                          <button
+                            onClick={async () => {
+                              if (!plotRow || !ecgArray.length || !selectedModels) {
+                                alert('Select a record, load its ECG, and choose a model.');
+                                return;
+                              }
+                              try {
+                                setPrediction({ loading: true, data: null, error: null }); // loading state
+                                const resp = await API.post('/predict-ecg/', {
+                                  model_name: selectedModels,
+                                  input: ecgArray,
+                                });
+                                setPrediction({ loading: false, data: resp.data, error: null });
+                                console.log("Prediction response:", resp.data);
+                              } catch (err) {
+                                const errorMsg = err.response?.data?.detail || err.message;
+                                setPrediction({ loading: false, data: null, error: errorMsg });
+                                console.error("Prediction error:", err);
+                              }
+                            }}
+                            disabled={!plotRow || !ecgArray.length || !selectedModels}
+                            className="px-3 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Predict ECG
+                          </button>
+
+                          {/* Prediction Display */}
+                          {prediction && (
+                            <div className="mt-3 p-3 border border-gray-300 rounded bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100">
+                              {prediction.loading && <p>Predicting… ⏳</p>}
+
+                              {prediction.error && (
+                                <p className="text-red-600 dark:text-red-400">
+                                  Prediction Error: {prediction.error}
+                                </p>
+                              )}
+
+                              {prediction.data && (
+                                <>
+                                  <p><strong>Predicted:</strong> {prediction.data.predicted_class_name}</p>
+                                  {prediction.data.probabilities && (
+                                    <div className="mt-2">
+                                      <strong>Probabilities:</strong>
+                                      <ul className="list-disc list-inside text-sm">
+                                        {Object.entries(prediction.data.probabilities).map(([label, prob]) => (
+                                          <li key={label}>
+                                            {label}: {(prob * 100).toFixed(2)}%
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                     {labelOptions.length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         {labelOptions.map(opt => {
@@ -436,6 +565,18 @@
                 />
                 Show descriptions
               </label>
+
+              <div className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  id="evalMode"
+                  checked={evalMode}
+                  onChange={() => setEvalMode(prev => !prev)}
+                />
+                <label htmlFor="evalMode" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Use Evaluation Mode
+                </label>
+              </div>
             </div>
 
             {/* Data table & pagination */}

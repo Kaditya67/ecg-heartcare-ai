@@ -683,7 +683,30 @@ class PredictECGView(APIView):
             pred_class = torch.argmax(logits, dim=1).item()
             probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()[0]
 
+        # Fetch the friendly class name from the ECGLabel table
+        try:
+            pred_class_obj = ECGLabel.objects.get(value=pred_class-1)
+            pred_class_name = pred_class_obj.name
+        except ECGLabel.DoesNotExist:
+            pred_class_name = f"Unknown ({pred_class})"
+        
+        # print(f"Predicted Class: {pred_class_name}")
         return Response({
             'predicted_class': pred_class,
+            'predicted_class_name': pred_class_name,
             'probabilities': probs
         })
+
+class ModelListView(APIView):
+    def get(self, request):
+        # You can filter out only the required info for frontend
+        models_info = {
+            name: {
+                "input_size": info["input_size"],
+                "num_classes": info["num_classes"],
+                # you can also send a human-friendly label if available
+                "label": info.get("label", name)
+            }
+            for name, info in MODEL_MAP.items()
+        }
+        return Response(models_info, status=status.HTTP_200_OK)

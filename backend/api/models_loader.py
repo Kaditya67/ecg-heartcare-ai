@@ -1,4 +1,4 @@
-from .model_architecture import ECG1DCNN 
+from api.Model_architechture.ECG1DCNN import ECG1DCNN
 
 MODEL_MAP = {
     'ECG1DCNN': {

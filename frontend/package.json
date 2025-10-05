@@ -25,6 +25,7 @@
     "react-parallax": "^3.5.2",
     "react-plotly.js": "^2.6.0",
     "react-router-dom": "^7.7.1",
+    "react-toastify": "^11.0.5",
     "tailwindcss": "^4.1.11",
     "xlsx": "^0.18.5"
   },

@@ -28,6 +28,7 @@ const DashboardNavbar = () => {
     { name: 'Files', path: '/upload' },
     { name: 'EcgLabel', path: '/EcgLabel' },
     { name: 'Custom', path: '/custom' },
+    { name: 'Models', path: '/models' },
   ];
 
   const navigate = useNavigate();

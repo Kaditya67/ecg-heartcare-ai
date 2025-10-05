@@ -710,3 +710,56 @@ class ModelListView(APIView):
             for name, info in MODEL_MAP.items()
         }
         return Response(models_info, status=status.HTTP_200_OK)
+
+
+import os
+import glob
+import gdown
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+# Config
+DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1U7dPo0R20KonIRP46NsBRFREbAJ__O6A"
+LOCAL_MODELS_FOLDER = "api/models"
+os.makedirs(LOCAL_MODELS_FOLDER, exist_ok=True)
+class DriveModelListView(APIView):
+
+    def get(self, request):
+        target_folder = request.query_params.get("target_folder", LOCAL_MODELS_FOLDER)
+        os.makedirs(target_folder, exist_ok=True)
+
+        # Download Drive folder contents quietly
+        gdown.download_folder(DRIVE_FOLDER_URL, output=target_folder, quiet=True, use_cookies=False)
+
+        # Find all .pth files recursively
+        pth_files = glob.glob(os.path.join(target_folder, "**", "*.pth"), recursive=True)
+        file_names = [os.path.basename(f) for f in pth_files]
+
+        if not file_names:
+            return Response({"error": "No .pth files found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({"models": file_names, "folder": target_folder}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        filename = request.data.get("filename")
+        target_folder = request.data.get("target_folder", LOCAL_MODELS_FOLDER)
+        os.makedirs(target_folder, exist_ok=True)
+
+        if not filename:
+            return Response({"error": "Filename not provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        local_file_path = os.path.join(target_folder, filename)
+
+        # Always download/overwrite the file
+        gdown.download_folder(DRIVE_FOLDER_URL, output=target_folder, quiet=True, use_cookies=False)
+
+        # Verify the file exists now
+        if not os.path.exists(local_file_path):
+            return Response({"error": f"{filename} not found in Drive folder."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "file_path": local_file_path,
+            "folder": target_folder,
+            "message": f"{filename} is ready and updated."
+        }, status=status.HTTP_200_OK)

@@ -8,6 +8,7 @@ import CustomExportPage from './pages/CustomExportPage';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import ProtectedRoute from './components/ProtectedRoute';
+import ModelPage from './pages/ModelPage';
 
 function App() {
   return (
@@ -46,6 +47,14 @@ function App() {
         element={
           <ProtectedRoute>
             <CustomExportPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/models"
+        element={
+          <ProtectedRoute>
+            <ModelPage />
           </ProtectedRoute>
         }
       />

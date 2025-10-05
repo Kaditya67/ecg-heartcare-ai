@@ -14,7 +14,8 @@ from .views import (
     LabelsPatientsByFilesView,
     DashboardSummaryView,
     PredictECGView,
-    ModelListView
+    ModelListView,
+    DriveModelListView,
 )
 from .views import RegisterView, LoginView
 
@@ -37,5 +38,6 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', LoginView.as_view(), name='login'),
     path('predict-ecg/', PredictECGView.as_view(), name='predict-ecg'),
-    path('model_list/', ModelListView.as_view(), name='model-list')
+    path('model_list/', ModelListView.as_view(), name='model-list'),
+    path('drive-models/', DriveModelListView.as_view(), name='drive-models'),
 ]

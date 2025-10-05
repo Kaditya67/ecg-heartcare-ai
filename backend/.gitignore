@@ -36,3 +36,6 @@ static/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+service_account.json
+client_secrets.json

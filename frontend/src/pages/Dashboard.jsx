@@ -3,6 +3,7 @@ import { Pie } from 'react-chartjs-2';
 import API from '../api/api';
 import { ThemeContext } from '../components/context/ThemeContext';
 import Footer from '../components/Footer'; // import your Footer component
+import ChatbotWidget from './ChatbotWidget';
 
 const Dashboard = () => {
   const { theme } = useContext(ThemeContext);
@@ -123,6 +124,7 @@ const Dashboard = () => {
         </div>
       </main>
       <Footer />
+       <ChatbotWidget />
     </div>
   );
 };

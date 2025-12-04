@@ -18,6 +18,7 @@ from .views import (
     DriveModelListView,
 )
 from .views import RegisterView, LoginView
+from .views import dialogflow_webhook
 
 router = DefaultRouter()
 router.register(r'ecgfiles', ECGFileViewSet, basename='ecgfile')
@@ -40,4 +41,6 @@ urlpatterns = [
     path('predict-ecg/', PredictECGView.as_view(), name='predict-ecg'),
     path('model_list/', ModelListView.as_view(), name='model-list'),
     path('drive-models/', DriveModelListView.as_view(), name='drive-models'),
+
+    path('dialogflow/webhook/', dialogflow_webhook, name='dialogflow_webhook')
 ]

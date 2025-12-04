@@ -763,3 +763,66 @@ class DriveModelListView(APIView):
             "folder": target_folder,
             "message": f"{filename} is ready and updated."
         }, status=status.HTTP_200_OK)
+
+
+from django.http import JsonResponse
+import json
+from django.views.decorators.csrf import csrf_exempt
+
+@csrf_exempt
+def dialogflow_webhook(request):
+    if request.method == "POST":
+        body = json.loads(request.body)
+        
+        intent = body["queryResult"]["intent"]["displayName"]
+        params = body["queryResult"]["parameters"]
+
+        # ------------------------------
+        # Intent: Get_All_Models
+        # ------------------------------
+        if intent == "Get_All_Models":
+            models = ["CNN_Model", "LSTM_Model", "HybridNet"]
+            return JsonResponse({
+                "fulfillmentText": f"Available models: {', '.join(models)}."
+            })
+
+        # ------------------------------
+        # Intent: Get_Model_Description
+        # ------------------------------
+        if intent == "Get_Model_Description":
+            model_name = params.get("model_name")
+
+            # Dummy — replace with actual DB or logic
+            descriptions = {
+                "CNN_Model": "CNN_Model is a 12-layer CNN trained on 20k ECG samples.",
+                "LSTM_Model": "LSTM_Model uses recurrent layers and classifies 7 classes.",
+                "HybridNet": "HybridNet combines CNN + LSTM for arrhythmia analysis."
+            }
+
+            desc = descriptions.get(model_name, "No description found.")
+            return JsonResponse({"fulfillmentText": desc})
+
+        # ------------------------------
+        # Intent: Get_Model_Classes
+        # ------------------------------
+        if intent == "Get_Model_Classes":
+            model_name = params.get("model_name")
+
+            # Dummy classes
+            classes = {
+                "CNN_Model": ["Normal", "AF", "PVC", "LBBB", "RBBB"],
+                "LSTM_Model": ["Normal", "AF", "VT", "VF"],
+                "HybridNet": ["Normal", "AF", "PVC", "PAC", "LBBB"]
+            }
+
+            class_list = classes.get(model_name, [])
+            return JsonResponse({
+                "fulfillmentText": f"{model_name} predicts: {', '.join(class_list)}"
+            })
+
+        # Fallback
+        return JsonResponse({
+            "fulfillmentText": "Sorry, I couldn't process that request."
+        })
+
+    return JsonResponse({"message": "Only POST allowed"})

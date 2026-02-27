@@ -4,7 +4,12 @@
   import DashboardNavbar from '../components/DashboardNavbar';
   import { ThemeContext } from '../components/context/ThemeContext';
   import Footer from '../components/Footer';
-  import { FaFilter, FaSave, FaTrash } from 'react-icons/fa';
+  import ChatbotWidget from './ChatbotWidget';
+  import { 
+  FaFilter, FaSearch, FaSync, FaSave, FaCheckCircle, 
+  FaChevronLeft, FaChevronRight, FaRobot, FaTimes, 
+  FaCog, FaWaveSquare, FaPlus, FaBrain, FaListAlt 
+} from 'react-icons/fa';
 
   function useDebounce(value, delay) {
     const [debounced, setDebounced] = useState(value);
@@ -17,6 +22,20 @@
 
   const PAGE_SIZE = 100;
   const LOCAL_STORAGE_KEY = 'ecg_label_changes';
+
+  const LoadingOverlay = ({ loading, children }) => (
+    <div className="relative">
+      {children}
+      {loading && (
+        <div className="absolute inset-0 bg-[var(--bg)]/50 backdrop-blur-[1px] z-50 flex items-center justify-center rounded-lg">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-4 border-[var(--accent)] border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-xs font-bold text-[var(--accent)] uppercase tracking-widest">Loading...</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   const PaginatedDataPage = () => {
     const { theme } = useContext(ThemeContext);
@@ -32,7 +51,8 @@
     const [data, setData] = useState([]);
     const [plotRow, setPlotRow] = useState(null);
     const [labelOptions, setLabelOptions] = useState([]);
-    const [chartType, setChartType] = useState('plotly');
+    const [chartType, setChartType] = useState('echarts');
+    const [waveCache, setWaveCache] = useState({}); // { recordId: waveData }
 
     // Pagination states
     const [page, setPage] = useState(1);
@@ -47,6 +67,20 @@
     const [selectedModels, setSelectedModels] = useState([]);
     const [evalMode, setEvalMode] = useState(false);
     const [prediction, setPrediction] = useState(null);
+
+    // Auto-label state
+    const [autoLabelModel, setAutoLabelModel] = useState('ECG1DCNN');
+    const [autoLabelResult, setAutoLabelResult] = useState(null);
+    const [autoLabelLoading, setAutoLabelLoading] = useState(false);
+    const [showAutoLabel, setShowAutoLabel] = useState(false);
+
+    // Multi-Model Consensus State
+    const [multiModelResults, setMultiModelResults] = useState(null);
+    const [multiModelLoading, setMultiModelLoading] = useState(false);
+
+    const [showConflictsOnly, setShowConflictsOnly] = useState(false);
+    const [useRedis, setUseRedis] = useState(false);
+    const [showSettings, setShowSettings] = useState(false);
 
     // Track label changes
     const [changedLabels, setChangedLabels] = useState(() => {
@@ -106,9 +140,8 @@
 
     // FETCH DATA ONLY WHEN PAGE CHANGES AFTER FILTER APPLIED, NOT ON FILE CHANGES!
     useEffect(() => {
-      if (data.length === 0) return; // Don't re-fetch if no data has been loaded yet after mount/filter
-      // Only fetch when user changes page within selected files (not file set), 
-      // so store selected files at last filter apply
+      // Only skip if no file filter has been applied yet (no files selected)
+      if (!lastSelectedFilesRef.current || lastSelectedFilesRef.current.length === 0) return;
       fetchData(page, lastSelectedFilesRef.current);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page]);
@@ -122,7 +155,7 @@
     }, [lastSelectedFiles]);
 
     // Main fetchData function
-    const fetchData = async (pageNum = 1, selectedFileNames = null) => {
+    const fetchData = async (pageNum = 1, selectedFileNames = null, conflictOverride = null) => {
       setLoading(true);
       setError('');
       try {
@@ -137,11 +170,23 @@
           page: pageNum,
           page_size: PAGE_SIZE,
           file__file_name__in: filesToUse.join(','),
+          conflict_only: conflictOverride !== null ? (conflictOverride || undefined) : (showConflictsOnly || undefined),
+          use_redis: useRedis,
         };
         const response = await API.get('/records/', { params });
         const { results, count } = response.data;
         setData(results);
         setPageCount(Math.max(1, Math.ceil(count / PAGE_SIZE)));
+
+        // Aggressive Pre-fetch: Load first 10 waves of the page in background
+        results.slice(0, 10).forEach(rec => {
+          if (!waveCache[rec.id]) {
+            API.get(`/records/${rec.id}/wave/`, { params: { use_redis: useRedis } }).then(res => {
+              setWaveCache(prev => ({ ...prev, [rec.id]: res.data }));
+            }).catch(() => {});
+          }
+        });
+
       } catch (err) {
         setError(err.response?.data?.detail || err.message || 'Error loading data');
         setPlotRow(null);
@@ -169,23 +214,95 @@
       setLastSelectedFiles(selectedFileNames); // Save for further pagination
       fetchData(1, selectedFileNames);
     };
+
+    // Wave Pre-fetching logic: pre-load next 3 records in background
+    useEffect(() => {
+      // If redis is disabled or no plot, don't pre-fetch to save bandwidth
+      if (!useRedis || !plotRow || data.length === 0) return;
+      
+      const currentIndex = data.findIndex(r => r.id === plotRow.id);
+      if (currentIndex === -1) return;
+
+      // Identify next 3 records
+      const nextRecords = data.slice(currentIndex + 1, currentIndex + 4);
+      nextRecords.forEach(rec => {
+        // Trigger a silent fetch to get it into Redis/Memory cache
+        // Pass use_redis=true since we already checked useRedis above
+        API.get(`/records/${rec.id}/wave/`, { params: { use_redis: true } }).catch(() => {});
+      });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [plotRow?.id, useRedis]);
     
     const handlePageInputChange = (e) => setInputValue(e.target.value);
+
+    // Helper to keep page and input string in sync when using Prev/Next buttons
+    const changePage = (newPage) => {
+      setPage(newPage);
+      setInputValue(String(newPage));
+    };
+
+    const handleConfirmAI = async (recordId, patientId, aiLabelVal) => {
+      // Set the human label to match AI prediction
+      setChangedLabels(prev => {
+        const updated = {
+          ...prev,
+          [patientId]: {
+            ...(prev[patientId] || {}),
+            [recordId]: aiLabelVal
+          }
+        };
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
+        return updated;
+      });
+      // Optionally also verify it immediately
+      await handleVerify(recordId, false); 
+    };
 
     const fetchEcgData = async (id, patientId) => {
       setLoadingPlotId(id);
       setError('');
+      // Also fetch multi-model consensus
+      fetchMultiModelConsensus(id);
+
+      // Check cache first
+      if (waveCache[id]) {
+        const cachedData = waveCache[id];
+        setPlotRow(cachedData);
+        if (cachedData.label_options) setLabelOptions(cachedData.label_options);
+        setLoadingPlotId(null); // Ensure loading state is cleared for cached data
+        return;
+      }
+
       try {
-        const response = await API.get(`/records/${id}/wave/`, { params: { patient_id: patientId } });
-        setPlotRow(response.data);
-        if (response.data.label_options) setLabelOptions(response.data.label_options);
-        console.log(response.data.label_options)
+        const response = await API.get(`/records/${id}/wave/`, { 
+          params: { 
+            patient_id: patientId,
+            use_redis: useRedis // Pass toggle to backend
+          } 
+        });
+        const waveData = response.data;
+        setPlotRow(waveData);
+        setWaveCache(prev => ({ ...prev, [id]: waveData }));
+        if (waveData.label_options) setLabelOptions(waveData.label_options);
       } catch (err) {
         setError(err.response?.data?.detail || err.message || 'Error loading plot data');
         setPlotRow(null);
         setLabelOptions([]);
       } finally {
         setLoadingPlotId(null);
+      }
+    };
+
+    const fetchMultiModelConsensus = async (recordId) => {
+      setMultiModelLoading(true);
+      setMultiModelResults(null);
+      try {
+        const resp = await API.post('/model-compare/', { record_id: recordId });
+        setMultiModelResults(resp.data.model_results);
+      } catch (err) {
+        console.error('Failed to fetch multi-model consensus:', err);
+      } finally {
+        setMultiModelLoading(false);
       }
     };
 
@@ -223,6 +340,52 @@
       localStorage.removeItem(LOCAL_STORAGE_KEY);
     };
 
+    const handleAutoLabel = async () => {
+      const selectedFileNames = files.filter(f => f.selected).map(f => f.file_name);
+      if (selectedFileNames.length === 0) {
+        alert('Select at least one file first.');
+        return;
+      }
+      if (!window.confirm(
+        `AI will label all records (without AI label) in ${selectedFileNames.length} file(s) using ${autoLabelModel}.\nThe AI labels go into a SEPARATE column — your manual labels are never changed. Continue?`
+      )) return;
+
+      setAutoLabelLoading(true);
+      setAutoLabelResult(null);
+      try {
+        const allResults = [];
+        for (const fname of selectedFileNames) {
+          const resp = await API.post('/auto-label/', {
+            file_name: fname,
+            model_name: autoLabelModel,
+            overwrite: false,
+          });
+          allResults.push(resp.data);
+        }
+        setAutoLabelResult(allResults);
+        fetchData(page, lastSelectedFiles);
+      } catch (err) {
+        setAutoLabelResult([{ error: err.response?.data?.error || err.message }]);
+      } finally {
+        setAutoLabelLoading(false);
+      }
+    };
+
+    const handleVerify = async (recordId, currentVerified) => {
+      try {
+        await API.post('/verify-label/', {
+          record_id: recordId,
+          verified: !currentVerified,
+        });
+        // Optimistic update
+        setData(prev => prev.map(r =>
+          r.id === recordId ? { ...r, is_verified: !currentVerified } : r
+        ));
+      } catch (err) {
+        alert('Failed to update verification: ' + (err.response?.data?.error || err.message));
+      }
+    };
+
     const navigatePlot = (direction) => {
       if (!plotRow) return;
       const idx = data.findIndex(r => r.id === plotRow.id);
@@ -256,429 +419,365 @@
       changedLabels[patientId]?.[recordId] ?? defaultLabel ?? '--Not Labeled--';
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--bg)' }}>
         <DashboardNavbar />
-        <main style={{ flexGrow: 1, padding: '1.5rem', margin: 'auto', width: '100%' }}>
-          <div
-            className="max-w-6xl mx-auto p-6 space-y-6"
-            style={{ backgroundColor: 'var(--bg)', color: 'var(--text)', minHeight: '100vh' }}
-          >
-            <h2 className="text-2xl font-semibold">Filter and Label ECG Records</h2>
-
-            <section style={{ marginBottom: 16 }}>
-              {files.length === 0 ? (
-                <p>Loading files…</p>
-              ) : (
-                files.map(file => (
-                  <label key={file.file_name} style={{ display: 'block', marginBottom: 4 }}>
-                    <input
-                      type="checkbox"
-                      checked={file.selected}
-                      onChange={() => handleFileToggle(file.file_name)}
-                    />{' '}
-                    {file.file_name} ({file.total_records})
-                  </label>
-                ))
-              )}
-            </section>
-
-            <div className="flex justify-between items-center mb-6 gap-6">
-              {/* Left Side: File Filter + Model Selector */}
-              <div className="flex items-center gap-4">
-                {/* Apply File Filter */}
-                <button
-                  onClick={applyFileFilter}
-                  disabled={files.filter(f => f.selected).length === 0}
-                  className="flex items-center gap-2 px-4 py-2 rounded-md 
-                            bg-blue-600 hover:bg-blue-700 text-white 
-                            disabled:opacity-50 disabled:cursor-not-allowed
-                            dark:bg-blue-500 dark:hover:bg-blue-600"
-                  title="Apply File Filter"
-                >
-                  <FaFilter /> Apply Filter
-                </button>
-
-                {/* Model Select */}
-                {evalMode && (
-                <div>
-                  {/* <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Select Model
-                  </label> */}
-                  <select
-                    value={selectedModels}
-                    onChange={(e) => setSelectedModels(e.target.value)}
-                    className="border border-gray-300 dark:border-gray-600 
-                              rounded-md p-2 
-                              focus:ring-2 focus:ring-blue-500 focus:border-blue-500 
-                              text-sm bg-white dark:bg-gray-800 
-                              text-gray-900 dark:text-gray-100"
-                  >
-                    <option value="" disabled>
-                      -- Choose a model --
-                    </option>
-                    {Object.entries(models).map(([name, info]) => (
-                      <option key={name} value={name}>
-                        {info.label} ({info.num_classes} classes)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              </div>
-
-              {/* Right Side: Save & Clear */}
-              <div className="flex gap-3">
-              
-                {/* Save Labels */}
-                <button
-                  onClick={handleSaveLabels}
-                  disabled={!hasUnsavedChanges}
-                  className={`p-3 rounded-full text-white relative group transition-colors
-                    ${hasUnsavedChanges
-                      ? "bg-[var(--accent)] hover:bg-blue-700 dark:hover:bg-blue-600"
-                      : "bg-gray-400 dark:bg-gray-600 cursor-not-allowed"}`}
-                  title="Save Changes"
-                >
-                  <FaSave />
-                </button>
-
-                {/* Clear Changes */}
-                <button
-                  onClick={handleClearChanges}
-                  disabled={!hasUnsavedChanges}
-                  className={`p-3 rounded-full text-white relative group transition-colors
-                    ${hasUnsavedChanges
-                      ? "bg-red-500 hover:bg-red-600 dark:bg-red-400 dark:hover:bg-red-500"
-                      : "bg-gray-400 dark:bg-gray-600 cursor-not-allowed"}`}
-                  title="Clear Changes"
-                >
-                  <FaTrash />
-                </button>
-              </div>
-            </div>
-
-
-            {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
-
-            {plotRow && ecgArray.length > 0 && (
-              <div className="bg-[var(--card-bg)] shadow rounded-lg border border-[var(--border)] p-6 space-y-6">
-                {/* Plot header */}
-                <div className="flex justify-between items-center">
-                  <div>
-                    <div className="flex items-center gap-8">
-                      {/* <span className="text-md font-semibold">Record ID: {plotRow.id}</span> */}
-                      <span className="text-md font-semibold">
-                        Record: { (page - 1) * PAGE_SIZE + data.findIndex(r => r.id === plotRow.id) + 1 }
-                      </span>
-                      <span className="text-lg font-semibold">Patient ID: {plotRow.patient_id}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => navigatePlot('prev')}
-                      disabled={data.findIndex(r => r.id === plotRow.id) === 0}
-                      className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      ← Prev
-                    </button>
-                    <button
-                      onClick={() => navigatePlot('next')}
-                      disabled={data.findIndex(r => r.id === plotRow.id) === data.length - 1}
-                      className="px-3 py-1 bg-[var(--secondary)] rounded hover:bg-[#c2e2ff] disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Next →
-                    </button>
-                    <button
-                      onClick={() => {
-                        setPlotRow(null);
-                        setLabelOptions([]);
-                      }}
-                      className="ml-4 text-[var(--danger)] hover:underline"
-                    >
-                      Close
-                    </button>
-                  </div>
-                </div>
-
-                {/* Chart and label controls */}
-                <div className="flex flex-col md:flex-row gap-8 items-start">
-                  <div className="flex-1 flex flex-col items-center">
-                    <div className="mb-3 self-end">
-                      <label className="mr-2">Chart Type:</label>
-                      <select
-                        value={chartType}
-                        onChange={e => setChartType(e.target.value)}
-                        className="border rounded p-1 bg-[var(--card-bg)] text-[var(--text)]"
-                      >
-                        <option value="plotly">Plotly</option>
-                        <option value="chartjs">Chart.js</option>
-                        <option value="echarts">ECharts</option>
-                      </select>
-                    </div>
-                    <div className="w-full" style={{ minHeight: '400px', maxWidth: 900 }}>
-                      <ECGCharts
-                        ecgArray={ecgArray}
-                        chartType={chartType}
-                        theme={readyTheme}
-                        key={readyTheme + chartType}
+        
+        <main className="flex-grow p-4 lg:p-10">
+          <div className="max-w-[1600px] mx-auto flex flex-col lg:flex-row gap-10 items-start">
+            
+            {/* LEFT COLUMN: Controls & Data Table */}
+            <div className="w-full lg:w-[40%] sticky top-8 space-y-6">
+              <div className="card space-y-4">
+                <div className="flex justify-between items-center border-b border-[var(--border)] pb-3">
+                  <h2 className="text-lg font-bold text-[var(--text)]">ECG Dataset</h2>
+                  <div className="flex items-center gap-4">
+                    {/* Main Redis Toggle (Promoted for visibility) */}
+                    <div className="flex items-center gap-2 px-2 py-1 bg-[var(--highlight)] border border-[var(--border)] rounded-md">
+                      <input 
+                        type="checkbox" 
+                        id="main_redis_toggle" 
+                        checked={useRedis}
+                        onChange={(e) => setUseRedis(e.target.checked)}
+                        className="w-3.5 h-3.5 cursor-pointer"
                       />
+                      <label htmlFor="main_redis_toggle" className="text-[10px] font-bold uppercase tracking-wider text-[var(--text)] cursor-pointer select-none">
+                        Cache {useRedis ? <span className="text-green-500">Active</span> : <span className="text-amber-500">Slow</span>}
+                      </label>
                     </div>
+
+                    <button 
+                      onClick={() => setShowSettings(!showSettings)}
+                      className={`p-2 rounded-lg transition-colors ${showSettings ? 'bg-[var(--accent)] text-white' : 'hover:bg-[var(--highlight)] text-gray-500'}`}
+                      title="Interface Settings"
+                    >
+                      <FaCog />
+                    </button>
                   </div>
+                </div>
 
-                  <div className="w-full md:w-64 border-l border-[var(--border)] pl-4 space-y-5">
-                     {/* Predict ECG Button + Result */}
-                      {evalMode && (
-                        <div className="mb-4">
-                          <button
-                            onClick={async () => {
-                              if (!plotRow || !ecgArray.length || !selectedModels) {
-                                alert('Select a record, load its ECG, and choose a model.');
-                                return;
-                              }
-                              try {
-                                setPrediction({ loading: true, data: null, error: null }); // loading state
-                                const resp = await API.post('/predict-ecg/', {
-                                  model_name: selectedModels,
-                                  input: ecgArray,
-                                });
-                                setPrediction({ loading: false, data: resp.data, error: null });
-                                console.log("Prediction response:", resp.data);
-                              } catch (err) {
-                                const errorMsg = err.response?.data?.detail || err.message;
-                                setPrediction({ loading: false, data: null, error: errorMsg });
-                                console.error("Prediction error:", err);
-                              }
-                            }}
-                            disabled={!plotRow || !ecgArray.length || !selectedModels}
-                            className="px-3 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Predict ECG
-                          </button>
+                {/* Settings Panel (Consolidated) */}
+                {showSettings && (
+                  <div className="p-4 bg-[var(--highlight)] rounded-lg border border-[var(--border)] space-y-4">
+                    <div className="flex justify-between items-center">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-gray-500">Advanced Settings</h4>
+                      <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600"><FaTimes size={10} /></button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1">
+                      {/* Conflict Explorer */}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="conflict_toggle"
+                          checked={showConflictsOnly}
+                          onChange={(e) => {
+                            setShowConflictsOnly(e.target.checked);
+                            if (lastSelectedFiles.length > 0) fetchData(1, lastSelectedFiles, e.target.checked);
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <label htmlFor="conflict_toggle" className="text-xs font-semibold text-[var(--text)] cursor-pointer">Show Conflicts Only</label>
+                      </div>
+                    </div>
 
-                          {/* Prediction Display */}
-                          {prediction && (
-                            <div className="mt-3 p-3 border border-gray-300 rounded bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100">
-                              {prediction.loading && <p>Predicting… ⏳</p>}
-
-                              {prediction.error && (
-                                <p className="text-red-600 dark:text-red-400">
-                                  Prediction Error: {prediction.error}
-                                </p>
-                              )}
-
-                              {prediction.data && (
-                                <>
-                                  <p><strong>Predicted:</strong> {prediction.data.predicted_class_name}</p>
-                                  {prediction.data.probabilities && (
-                                    <div className="mt-2">
-                                      <strong>Probabilities:</strong>
-                                      <ul className="list-disc list-inside text-sm">
-                                        {Object.entries(prediction.data.probabilities).map(([label, prob]) => (
-                                          <li key={label}>
-                                            {label}: {(prob * 100).toFixed(2)}%
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          )}
+                    {/* AI Auto-Label settings moved here */}
+                    <div className="pt-3 border-t border-[var(--border)] space-y-3">
+                      <div className="flex justify-between items-center">
+                        <p className="text-[10px] uppercase font-bold text-gray-400">AI Background Jobs</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <select
+                          value={autoLabelModel}
+                          onChange={e => setAutoLabelModel(e.target.value)}
+                          className="flex-1 bg-[var(--card-bg)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)]"
+                        >
+                          {Object.entries(models).length > 0
+                            ? Object.entries(models).map(([name, info]) => (
+                                <option key={name} value={name} disabled={!info.available}>{info.label}</option>
+                              ))
+                            : <option value="ECG1DCNN">ECG1DCNN (Baseline)</option>
+                          }
+                        </select>
+                        <button
+                          onClick={handleAutoLabel}
+                          disabled={autoLabelLoading}
+                          className="px-3 py-1 bg-[var(--accent)] text-white text-[10px] font-bold rounded hover:brightness-110 disabled:opacity-50"
+                        >
+                          {autoLabelLoading ? 'Running...' : 'Run Auto-Label'}
+                        </button>
+                      </div>
+                      {autoLabelResult && (
+                        <div className="text-[9px] p-2 bg-blue-50 dark:bg-blue-900/10 rounded border border-blue-100 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+                          Job completed. Refresh data to see results.
                         </div>
                       )}
-
-                    {labelOptions.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {labelOptions.map(opt => {
-                          const currentLabel = getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label);
-                          const isSelected = currentLabel === opt.value;
-                          return (
-                            <div className="relative group inline-block">
-                              <button
-                                key={opt.value}
-                                className={`px-3 py-1 rounded text-xs font-medium ${
-                                  isSelected ? 'text-white' : 'text-[var(--text)] border'
-                                }`}
-                                style={{ backgroundColor: isSelected ? opt.color : 'transparent' }}
-                                onClick={() =>
-                                  handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)
-                                }
-                              >
-                                {opt.name}
-                              </button>
-
-                              {/* Tooltip */}
-                              {showDescription && (
-                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 
-                                              hidden group-hover:flex flex-col items-center z-20">
-                                {/* Bubble */}
-                                <div className="w-64 rounded-lg bg-black text-white text-sm px-3 py-2 
-                                                leading-snug shadow-lg opacity-0 group-hover:opacity-100 
-                                                transition duration-300 ease-out">
-                                  {opt.description}
-                                </div>
-                                {/* Arrow */}
-                                <div className="w-3 h-3 bg-black rotate-45 mt-[-6px]"></div>
-                              </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="text-sm text-[var(--text)] space-y-1">
-                      <p>
-                        <strong>Heart Rate:</strong> {plotRow.heart_rate || 'Unknown'}
-                      </p>
-                      <p>
-                        <strong>Label:</strong> {getCurrentLabel(plotRow.patient_id, plotRow.id, plotRow.label)}
-                      </p>
-                      <p>
-                        <strong>Source:</strong> {plotRow.source || 'Unknown'}
-                      </p>
-                      <p>
-                        <strong>Total Points:</strong> {ecgArray.length}
-                      </p>
                     </div>
                   </div>
+                )}
+
+                {/* File Filter section */}
+                <section className="space-y-1.5">
+                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Selection Scope</h3>
+                  <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-1">
+                    {files.length === 0 ? (
+                      <div className="w-full flex justify-center py-2"><div className="w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" /></div>
+                    ) : (
+                      files.map(file => (
+                        <label 
+                          key={file.file_name} 
+                          className={`flex items-center gap-2 px-2 py-1 rounded border text-[10px] font-semibold transition-all cursor-pointer
+                            ${file.selected 
+                              ? 'bg-[var(--accent)] border-[var(--accent)] text-white' 
+                              : 'bg-[var(--card-bg)] border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]'}`}
+                        >
+                          <input type="checkbox" className="hidden" checked={file.selected} onChange={() => handleFileToggle(file.file_name)} />
+                          {file.file_name}
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </section>
+
+                <div className="flex justify-center pt-1">
+                  <button
+                    onClick={applyFileFilter}
+                    disabled={loading || files.filter(f => f.selected).length === 0}
+                    className="px-6 py-1.5 bg-[var(--accent)] text-white text-[10px] font-bold uppercase tracking-wider rounded-full hover:shadow-md transition-all flex items-center gap-2 disabled:opacity-30"
+                  >
+                    <FaFilter size={10} /> Apply Selection
+                  </button>
                 </div>
               </div>
-            )}
 
-            {/* Settings panel */}
-            <div className="flex items-center gap-4 mb-4">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={autoMove}
-                  onChange={() => setAutoMove(prev => !prev)}
-                />
-                Auto move to next
-              </label>
+              {/* Data Table Section */}
+              <div className="card !p-0 overflow-hidden">
+                <LoadingOverlay loading={loading}>
+                  <div className="overflow-x-auto overflow-y-auto max-h-[600px] relative">
+                    <table className="min-w-full text-left">
+                      <thead className="bg-[var(--highlight)] text-[var(--text)] border-b border-[var(--border)] sticky top-0 z-20">
+                        <tr>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest">ID</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest">Patient</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-center">Label</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-center">AI</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--border)]">
+                        {data.map(({ id, patient_id, heart_rate, label, ai_label, is_verified }, idx) => {
+                          const isChanged = changedLabels[patient_id]?.[id] !== undefined;
+                          const displayLabel = getLabelName(patient_id, id, label);
+                          const humanVal = changedLabels[patient_id]?.[id] ?? label?.value;
+                          const hasConflict = ai_label && humanVal !== undefined && humanVal !== ai_label.value;
+                          const isActive = plotRow?.id === id;
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={showDescription}
-                  onChange={() => setShowDescription(prev => !prev)}
-                />
-                Show descriptions
-              </label>
+                          return (
+                            <tr
+                              key={id}
+                              onClick={() => fetchEcgData(id, patient_id)}
+                              className={`cursor-pointer transition-colors border-l-4 
+                                ${isActive ? 'bg-[var(--secondary)] border-l-[var(--accent)] shadow-inner' : 'hover:bg-[var(--highlight)] border-l-transparent'}
+                                ${hasConflict && !isActive ? 'bg-red-500/5' : ''}
+                              `}
+                            >
+                              <td className="px-4 py-3 text-[11px] font-medium opacity-50 font-mono">{(page - 1) * PAGE_SIZE + idx + 1}</td>
+                              <td className="px-4 py-3">
+                                <span className="font-bold text-xs text-[var(--text)] block">{patient_id}</span>
+                                <span className="text-[9px] opacity-40 block font-mono">RECORD {id}</span>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${isChanged ? 'text-green-600 bg-green-50 border border-green-200' : 'text-[var(--text)] opacity-70'}`}>
+                                  {displayLabel || 'None'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-center text-[11px]">
+                                {ai_label ? (
+                                  <span className="font-semibold text-blue-600 dark:text-blue-400">{ai_label.name}</span>
+                                ) : <span className="opacity-20">—</span>}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {is_verified ? (
+                                  <span className="text-[9px] font-bold text-green-600 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded uppercase">Verified</span>
+                                ) : (
+                                  hasConflict ? (
+                                    <span className="text-[9px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded uppercase">Conflict</span>
+                                  ) : <span className="text-[9px] text-gray-400 uppercase">Pending</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </LoadingOverlay>
 
-              <div className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  id="evalMode"
-                  checked={evalMode}
-                  onChange={() => setEvalMode(prev => !prev)}
-                />
-                <label htmlFor="evalMode" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Use Evaluation Mode
-                </label>
+                {/* Pagination UI */}
+                <div className="px-4 py-3 bg-[var(--highlight)] flex justify-between items-center border-t border-[var(--border)]">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Page {page} of {pageCount}</span>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => changePage(Math.max(1, page - 1))}
+                      disabled={page === 1}
+                      className="px-3 py-1 border border-[var(--border)] rounded text-[10px] font-bold uppercase tracking-wider disabled:opacity-30 bg-[var(--card-bg)] text-[var(--text)] hover:border-[var(--accent)] transition-colors"
+                    >Prev</button>
+                    <button 
+                      onClick={() => changePage(Math.min(pageCount, page + 1))}
+                      disabled={page === pageCount}
+                      className="px-3 py-1 border border-[var(--border)] rounded text-[10px] font-bold uppercase tracking-wider disabled:opacity-30 bg-[var(--card-bg)] text-[var(--text)] hover:border-[var(--accent)] transition-colors"
+                    >Next</button>
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Data table & pagination */}
-            {(!loading && !error && data.length>0) ? (
-              <>
-                <div
-                  className="overflow-x-auto border border-[var(--border)] rounded bg-[var(--card-bg)] shadow"
-                  style={{ maxHeight: '300px', overflowY: 'auto' }}
-                >
-                  <table className="min-w-full table-auto text-sm divide-y divide-gray-200">
-                    <thead className="bg-[var(--secondary)] sticky top-0 z-10">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Record</th>
-                        <th className="px-4 py-3 text-left font-semibold text-[var(--text)]">Patient ID</th>
-                        <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Heart Rate</th>
-                        <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Label</th>
-                        <th className="px-4 py-3 text-center font-semibold text-[var(--text)]">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {data.map(({ id, patient_id, heart_rate, label }, idx) => {
-                        const recordNumber = (page - 1) * PAGE_SIZE + idx + 1;
-                        const isChanged = changedLabels[patient_id]?.[id] !== undefined;
-                        const displayLabel = getLabelName(patient_id, id, label);
-                        return (
-                          <tr
-                            key={id}
-                            className={`cursor-pointer hover:bg-[var(--highlight)] ${
-                              idx % 2 === 0 ? 'bg-[var(--card-bg)]' : ''
-                            }`}
-                          >
-                            <td className="px-4 py-3 font-mono text-[var(--text)]">{recordNumber}</td>
-                            <td className="px-4 py-3 text-[var(--text)]">{patient_id}</td>
-                            <td className="px-4 py-3 text-center text-[var(--text)]">{heart_rate ?? 'N/A'}</td>
-                            <td
-                              className={`px-4 py-3 text-center font-medium ${
-                                isChanged ? 'text-green-600' : 'text-[var(--text)]'
-                              }`}
+            {/* RIGHT COLUMN: Sticky Signal Analyzer */}
+            <div className="w-full lg:w-[60%] sticky top-8 space-y-6">
+              <div className="card min-h-[600px] flex flex-col relative !p-6">
+                <LoadingOverlay loading={loadingPlotId !== null}>
+                  {plotRow ? (
+                    <>
+                      <div className="flex justify-between items-start mb-4 border-b border-[var(--border)] pb-4">
+                        <div className="space-y-0.5">
+                          <h3 className="text-xl font-bold text-[var(--text)]">Signal Analyzer</h3>
+                          <p className="text-[11px] font-semibold text-gray-400">U-ID {plotRow.id} • Patient <span className="text-[var(--text)]">{plotRow.patient_id}</span> • Rate <span className="text-[var(--text)]">{plotRow.heart_rate ?? 'N/A'}</span></p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2 px-2 py-1 bg-[var(--highlight)] border border-[var(--border)] rounded-lg">
+                            <span className="text-[9px] font-bold uppercase text-gray-400">Engine:</span>
+                            <select 
+                              value={chartType} 
+                              onChange={e => setChartType(e.target.value)}
+                              className="bg-transparent text-[var(--text)] text-[10px] font-bold outline-none cursor-pointer"
                             >
-                              {displayLabel}
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                              <button
-                                onClick={() => fetchEcgData(id, patient_id)}
-                                disabled={loadingPlotId !== null}
-                                className={`px-3 py-1 rounded text-white transition ${
-                                  loadingPlotId === id ? 'bg-gray-400 cursor-not-allowed' : 'bg-[var(--accent)] hover:bg-blue-700'
-                                }`}
-                                aria-label={`Plot ECG record ${id} for patient ${patient_id}`}
-                              >
-                                {loadingPlotId === id ? 'Loading...' : 'Plot'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                              <option value="echarts">ECharts (Smooth)</option>
+                              <option value="plotly">Plotly (Scientific)</option>
+                              <option value="chartjs">Chart.js (Classic)</option>
+                            </select>
+                          </div>
+                          <button
+                            onClick={() => handleSaveLabels()}
+                            disabled={!hasUnsavedChanges}
+                            className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-widest transition-all
+                              ${hasUnsavedChanges ? 'bg-green-600 border-green-600 text-white shadow-sm' : 'bg-[var(--highlight)] text-gray-400 border-[var(--border)]'}`}
+                          >
+                            <FaSave className="inline mr-1" /> Commit Changes
+                          </button>
+                        </div>
+                      </div>
 
-                <div className="flex justify-center items-center gap-6 mt-6 select-none">
-                  <button
-                    onClick={() => setInputValue(String(Number(inputValue) - 1))}
-                    disabled={page <= 1}
-                    className="px-5 py-2 border rounded-md bg-[var(--card-bg)] hover:bg-[#e0f2fe] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Previous
-                  </button>
+                    <div className="flex-grow bg-[var(--bg)] border border-[var(--border)] rounded-lg overflow-hidden relative shadow-inner">
+                       <div className="h-full min-h-[400px]">
+                          <ECGCharts
+                            ecgArray={ecgArray}
+                            chartType={chartType}
+                            theme={readyTheme}
+                            key={readyTheme + chartType + plotRow.id}
+                          />
+                       </div>
+                    </div>
 
-                  <div className="flex items-center space-x-2">
-                    <label htmlFor="pageInput" className="font-semibold text-[var(--text)]">
-                      Page
-                    </label>
-                    <input
-                      id="pageInput"
-                      type="number"
-                      min="1"
-                      max={pageCount}
-                      value={inputValue}
-                      onChange={handlePageInputChange}
-                      className="w-20 text-center border border-[var(--border)] rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                      aria-label="Page number input"
-                    />
-                    <span className="text-[var(--text)]">of {pageCount}</span>
+                    {/* Labeling Controls Overlay */}
+                    <div className="mt-8 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                       {labelOptions.map(opt => {
+                          const isSelected = getCurrentLabel(plotRow.patient_id, plotRow.id) === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              onClick={() => handleLabelButtonClick(plotRow.patient_id, plotRow.id, opt.value)}
+                              className={`p-3 rounded-lg flex flex-col items-center gap-1 transition-colors border
+                                ${isSelected 
+                                  ? 'bg-[var(--accent)] border-[var(--accent)] text-white' 
+                                  : 'bg-[var(--highlight)] border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]'}
+                              `}
+                            >
+                              <span className="text-xs font-bold uppercase">{opt.name}</span>
+                            </button>
+                          );
+                       })}
+                     </div>
+
+                     {/* Multi-Model Consensus Sidebar/Section */}
+                     <div className="mt-8 pt-6 border-t border-[var(--border)] space-y-4">
+                        <div className="flex items-center justify-between">
+                           <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                              <FaBrain className="text-[var(--accent)]" /> Model Consensus Leaderboard
+                           </div>
+                           {multiModelLoading && (
+                             <div className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin"></div>
+                           )}
+                        </div>
+
+                        {!multiModelResults && !multiModelLoading ? (
+                           <p className="text-[10px] text-gray-400 italic">Select a record to trigger consensus engine audit.</p>
+                        ) : (
+                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {multiModelResults && Object.entries(multiModelResults).map(([mId, res]) => (
+                                 <div 
+                                    key={mId}
+                                    onClick={() => !res.error && plotRow && handleLabelButtonClick(plotRow.patient_id, plotRow.id, res.predicted_class)}
+                                    className={`p-3 rounded-lg border transition-all cursor-pointer group flex items-center justify-between ${
+                                      res.error 
+                                      ? 'bg-red-50/5 border-red-500/10 opacity-50 grayscale' 
+                                      : 'bg-[var(--highlight)] border-[var(--border)] hover:border-[var(--accent)]'
+                                    }`}
+                                 >
+                                    <div className="space-y-0.5">
+                                       <p className="text-[9px] font-bold uppercase text-gray-400 group-hover:text-[var(--accent)] transition-colors">{res.label || mId}</p>
+                                       <p className={`text-xs font-bold ${res.error ? 'text-red-400' : 'text-[var(--text)]'}`}>
+                                          {res.error ? 'Weights Missing' : res.predicted_class_name}
+                                       </p>
+                                    </div>
+                                    {!res.error && (
+                                       <div className="text-[9px] font-mono font-bold text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity">
+                                          APPLY
+                                       </div>
+                                    )}
+                                 </div>
+                              ))}
+                           </div>
+                        )}
+                     </div>
+
+                      <div className="mt-8 flex justify-between items-center px-4 pt-4 border-t border-[var(--border)]">
+                        <div className="flex gap-2">
+                           <button onClick={() => navigatePlot('prev')} className="w-8 h-8 rounded border border-[var(--border)] flex items-center justify-center hover:bg-[var(--highlight)] text-[var(--text)] transition-all">←</button>
+                           <button onClick={() => navigatePlot('next')} className="w-8 h-8 rounded border border-[var(--border)] flex items-center justify-center hover:bg-[var(--highlight)] text-[var(--text)] transition-all">→</button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                           <button
+                             onClick={() => handleVerify(plotRow.id, !plotRow.is_verified)}
+                             className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-wider transition-all
+                               ${plotRow.is_verified 
+                                ? 'bg-green-600 border-green-600 text-white shadow-sm' 
+                                : 'bg-[var(--highlight)] border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]'}`}
+                           >
+                               {plotRow.is_verified ? <><FaCheckCircle className="inline mr-1" /> Verified</> : 'Verify'}
+                           </button>
+                        </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex-grow flex flex-col items-center justify-center space-y-3 py-20 text-center">
+                    <div className="w-12 h-12 rounded-full bg-[var(--highlight)] flex items-center justify-center text-gray-300"><FaFilter size={24} /></div>
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Awaiting Selection</h3>
+                      <p className="text-[10px] text-gray-400 font-medium">Select a patient record to begin analysis.</p>
+                    </div>
                   </div>
-
-                  <button
-                    onClick={() => setInputValue(String(Number(inputValue) + 1))}
-                    disabled={page >= pageCount}
-                    className="px-5 py-2 border rounded-md bg-[var(--card-bg)] hover:bg-[#e0f2fe] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Next
-                  </button>
-                </div>
-              </>
-            ):
-            (
-              <p className="text-gray-500 mt-4">{loading ? 'Loading data...' : 'Apply filter...'}</p>
-            )}
+                )}
+                </LoadingOverlay>
+              </div>
+            </div>
           </div>
         </main>
+
+        <ChatbotWidget />
         <Footer />
+
+        <style dangerouslySetInnerHTML={{ __html: `
+          body { overflow-x: hidden; }
+        `}} />
       </div>
     );
   };

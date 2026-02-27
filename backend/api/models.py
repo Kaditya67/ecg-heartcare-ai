@@ -28,14 +28,50 @@ class ECGRecord(models.Model):
         ("skipped", "Skipped"),
         ("deleted", "Deleted"),
     ]
+    LABELED_BY_CHOICES = [
+        ("import", "Imported"),
+        ("human", "Human"),
+        ("ai", "AI"),
+    ]
 
     file = models.ForeignKey(ECGFile, on_delete=models.CASCADE, related_name="records")
 
     patient_id = models.CharField(max_length=100, db_index=True)
     ecg_wave = models.JSONField()  # Stores list/array of 2604 points
     heart_rate = models.FloatField()
-    label = models.ForeignKey(ECGLabel, null=True, blank=True, on_delete=models.SET_NULL)  # FK to label table
-    
+
+    # ── Human label (manually set by annotator) ───────────────────────────
+    label = models.ForeignKey(
+        ECGLabel, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="records"
+    )
+    labeled_by = models.CharField(
+        max_length=10, choices=LABELED_BY_CHOICES, default="import"
+    )
+    is_verified = models.BooleanField(
+        default=False,
+        help_text="True means a human has confirmed this label is correct."
+    )
+
+    # ── AI-predicted label (never overwrites manual label) ────────────────
+    ai_label = models.ForeignKey(
+        ECGLabel, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="ai_records",
+        help_text="Label predicted by the AI model. Stored separately from the human label."
+    )
+    ai_model_name = models.CharField(
+        max_length=100, null=True, blank=True,
+        help_text="Name of the model that produced ai_label."
+    )
+    ai_confidence = models.FloatField(
+        null=True, blank=True,
+        help_text="Confidence core (e.g., max probability) for the AI prediction."
+    )
+    ai_probabilities = models.JSONField(
+        null=True, blank=True,
+        help_text="Full probability distribution across all labels."
+    )
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="untouched")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -44,14 +80,15 @@ class ECGRecord(models.Model):
             models.Index(fields=["patient_id"]),
             models.Index(fields=["status"]),
             models.Index(fields=["label"]),
+            models.Index(fields=["is_verified"]),
+            models.Index(fields=["ai_label"]),
         ]
 
     def __str__(self):
         label_name = self.label.name if self.label else "No Label"
-        return f"Patient {self.patient_id} - Status: {self.status} - Label: {label_name}"
+        return f"Patient {self.patient_id} - Label: {label_name} - Verified: {self.is_verified}"
 
 from django.contrib.auth.models import User
-from django.db import models
 
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)

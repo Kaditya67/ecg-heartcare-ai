@@ -29,6 +29,8 @@ const DashboardNavbar = () => {
     { name: 'EcgLabel', path: '/EcgLabel' },
     { name: 'Custom', path: '/custom' },
     { name: 'Models', path: '/models' },
+    { name: 'Training', path: '/training' },
+    { name: 'Analysis', path: '/analysis' },
   ];
 
   const navigate = useNavigate();

@@ -9,6 +9,8 @@ import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import ModelPage from './pages/ModelPage';
+import TrainingPage from './pages/TrainingPage';
+import AnalysisPage from './pages/AnalysisPage';
 
 function App() {
   return (
@@ -55,6 +57,22 @@ function App() {
         element={
           <ProtectedRoute>
             <ModelPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/training"
+        element={
+          <ProtectedRoute>
+            <TrainingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/analysis"
+        element={
+          <ProtectedRoute>
+            <AnalysisPage />
           </ProtectedRoute>
         }
       />

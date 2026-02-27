@@ -22,3 +22,19 @@ backend/uploads/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# Secrets and credentials
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!jsconfig.json
+backend/service-account.json.json
+backend/service_account.json
+backend/client_secrets.json
+
+# Model weights and large files
+*.pth
+*.pkl
+*.h5
+*.joblib

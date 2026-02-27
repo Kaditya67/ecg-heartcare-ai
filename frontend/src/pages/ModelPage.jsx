@@ -1,96 +1,124 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useContext } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import API from '../api/api';
 import DashboardNavbar from '../components/DashboardNavbar';
 import Footer from '../components/Footer';
+import { ThemeContext } from '../components/context/ThemeContext';
+import { FaCheckCircle, FaTimesCircle, FaBrain, FaCogs, FaMicrochip } from 'react-icons/fa';
+
+const LoadingOverlay = ({ loading, children, text = "Loading..." }) => (
+  <div className="relative">
+    {children}
+    {loading && (
+      <div className="absolute inset-0 bg-[var(--bg)]/50 backdrop-blur-[1px] z-50 flex items-center justify-center rounded-lg">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-4 border-[var(--accent)] border-t-transparent rounded-full animate-spin"></div>
+          <span className="text-[10px] font-bold text-[var(--accent)] uppercase tracking-widest">{text}</span>
+        </div>
+      </div>
+    )}
+  </div>
+);
 
 const ModelPage = () => {
-  const [models, setModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState('');
-  const [targetFolder, setTargetFolder] = useState('api/models'); // default folder
+  const { theme } = useContext(ThemeContext);
+  const [modelRegistry, setModelRegistry] = useState({});
   const [loading, setLoading] = useState(false);
 
   const fetchModels = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await API.get('/drive-models/', { params: { target_folder: targetFolder } });
-      setModels(resp.data.models);
+      const resp = await API.get('/model_list/');
+      setModelRegistry(resp.data);
     } catch (err) {
-      toast.error('Failed to fetch models.');
+      toast.error('Failed to fetch local model registry.');
     } finally {
       setLoading(false);
     }
-  }, [targetFolder]);
+  }, []);
 
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
 
-  const handleDownload = async () => {
-    if (!selectedModel) {
-      toast.warn('Select a model first!');
-      return;
-    }
-    setLoading(true);
-    try {
-      const resp = await API.post('/drive-models/', { filename: selectedModel, target_folder: targetFolder });
-      toast.success(`${selectedModel} downloaded successfully to ${resp.data.folder}`);
-      await fetchModels();
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Download failed, try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+    <div className="min-h-screen flex flex-col bg-[var(--bg)] text-[var(--text)] transition-colors duration-300">
       <DashboardNavbar />
-      <main style={{ flexGrow: 1, padding: '1.5rem', maxWidth: 800, margin: 'auto', width: '100%' }}>
-        <h2 className="text-2xl font-semibold mb-6 max-w-md mx-auto">Manage Models</h2>
+      
+      <main className="flex-grow p-4 lg:p-10">
+        <div className="max-w-[1000px] mx-auto space-y-10">
+          
+          <header className="flex flex-col items-center text-center space-y-2 border-b border-[var(--border)] pb-8">
+            <h1 className="text-3xl font-bold tracking-tight">Intelligence Inventory</h1>
+            <p className="text-xs font-bold uppercase tracking-widest text-gray-500">Local Neural Asset Management</p>
+          </header>
 
-        <div className="border-2 border-dashed border-green-500 rounded-md p-6 max-w-md mx-auto space-y-4">
-          <label className="block font-medium mb-2">Target Folder:</label>
-          <input
-            type="text"
-            value={targetFolder}
-            className="border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus:ring-2 focus:ring-green-400"
-            disabled
-          />
+          <section className="space-y-6">
+            <div className="flex items-center justify-between px-2">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-gray-500">
+                <FaCogs /> Registered Inference Engines
+              </div>
+              <button 
+                onClick={fetchModels}
+                className="text-[10px] font-bold text-[var(--accent)] hover:underline uppercase tracking-widest"
+              >
+                Refresh Registry
+              </button>
+            </div>
 
-          <label className="block font-medium mt-4 mb-2">Available Models:</label>
-          {loading ? (
-            <p className="text-gray-500">Loading models...</p>
-          ) : models.length === 0 ? (
-            <p className="text-gray-500 text-sm">No models found.</p>
-          ) : (
-            <select
-              value={selectedModel}
-              onChange={e => setSelectedModel(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus:ring-2 focus:ring-green-400"
-            >
-              <option value="">-- Choose a model --</option>
-              {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          )}
+            <LoadingOverlay loading={loading} text="Auditing Local Vault...">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {Object.entries(modelRegistry).map(([id, info]) => (
+                  <div key={id} className="card group hover:border-[var(--accent)] transition-all flex flex-col">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="p-2 rounded-lg bg-[var(--highlight)] text-[var(--accent)]">
+                        <FaBrain size={18} />
+                      </div>
+                      <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[9px] font-bold uppercase border ${
+                        info.available 
+                        ? 'bg-green-100/10 border-green-500/20 text-green-500' 
+                        : 'bg-red-100/10 border-red-500/20 text-red-500'
+                      }`}>
+                        {info.available ? <><FaCheckCircle /> Ready</> : <><FaTimesCircle /> Missing Weights</>}
+                      </div>
+                    </div>
 
-          <button
-            onClick={handleDownload}
-            disabled={loading || !selectedModel}
-            className={`mt-4 px-4 py-2 rounded text-white ${
-              loading || !selectedModel ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
-            }`}
-          >
-            {loading ? 'Downloading...' : 'Download Model'}
-          </button>
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-bold tracking-tight">{info.label}</h3>
+                      <p className="text-[10px] text-gray-500 font-medium uppercase tracking-tighter">ID: {id}</p>
+                    </div>
+
+                    <div className="mt-6 pt-4 border-t border-[var(--border)] grid grid-cols-2 gap-4">
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-bold uppercase text-gray-400">Input Size</span>
+                        <p className="text-xs font-mono font-semibold">{info.input_size}</p>
+                      </div>
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-bold uppercase text-gray-400">Class Out</span>
+                        <p className="text-xs font-mono font-semibold">{info.num_classes}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </LoadingOverlay>
+          </section>
+
+          {/* Local Priority Info Card */}
+          <div className="card border-dashed bg-[var(--highlight)] flex items-center gap-4 p-6">
+            <div className="w-10 h-10 rounded-full bg-[var(--accent)]/10 flex items-center justify-center text-[var(--accent)]">
+              <FaMicrochip />
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-xs font-bold">Local-First Architecture</p>
+              <p className="text-[10px] text-gray-500">The system is configured to prioritize local `.pth` and `.pkl` assets. No cloud sync is required for inference.</p>
+            </div>
+          </div>
         </div>
       </main>
-      <Footer />
 
-      {/* Toast container to show notifications */}
+      <Footer />
       <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
     </div>
   );

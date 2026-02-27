@@ -16,6 +16,13 @@ from .views import (
     PredictECGView,
     ModelListView,
     DriveModelListView,
+    AutoLabelView,
+    ModelCompareView,
+    ModelAnalysisView,
+    VerifyLabelView,
+    TrainModelView,
+    TrainJobListView,
+    TrainStatusView,
 )
 from .views import RegisterView, LoginView
 from .views import dialogflow_webhook
@@ -33,7 +40,7 @@ urlpatterns = [
     path('labels/count/', LabelCountView.as_view(), name='labels-count'),
     path('patients/count/', PatientCountView.as_view(), name='patients-count'),
     path('ecgrecords/export/', ECGCustomExportView.as_view(), name='ecg-custom-export'),
-    path('files/summary/', ECGFileSummaryView.as_view(), name='ecgfile-summary'),  # Use this to fetch file list and summary
+    path('files/summary/', ECGFileSummaryView.as_view(), name='ecgfile-summary'),
     path('ecgrecords/labels-patients-by-files/', LabelsPatientsByFilesView.as_view(), name='labels-patients-by-files'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('register/', RegisterView.as_view(), name='register'),
@@ -41,6 +48,12 @@ urlpatterns = [
     path('predict-ecg/', PredictECGView.as_view(), name='predict-ecg'),
     path('model_list/', ModelListView.as_view(), name='model-list'),
     path('drive-models/', DriveModelListView.as_view(), name='drive-models'),
-
-    path('dialogflow/webhook/', dialogflow_webhook, name='dialogflow_webhook')
+    path('auto-label/', AutoLabelView.as_view(), name='auto-label'),
+    path('model-compare/', ModelCompareView.as_view(), name='model-compare'),
+    path('model-analysis/', ModelAnalysisView.as_view(), name='model-analysis'),
+    path('verify-label/', VerifyLabelView.as_view(), name='verify-label'),
+    path('train/', TrainModelView.as_view(), name='train-model'),
+    path('train/jobs/', TrainJobListView.as_view(), name='train-jobs'),
+    path('train/<str:job_id>/status/', TrainStatusView.as_view(), name='train-status'),
+    path('dialogflow/webhook/', dialogflow_webhook, name='dialogflow_webhook'),
 ]

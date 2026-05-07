@@ -1,10 +1,11 @@
-  import React, { useEffect, useState, useContext } from 'react';
+  import React, { useEffect, useState, useContext, useRef } from 'react';
   import API from '../api/api';
   import ECGCharts from '../components/ECGCharts';
   import DashboardNavbar from '../components/DashboardNavbar';
   import { ThemeContext } from '../components/context/ThemeContext';
   import Footer from '../components/Footer';
   import ChatbotWidget from './ChatbotWidget';
+  import { getStoredRole } from '../utils/auth';
   import { 
   FaFilter, FaSearch, FaSync, FaSave, FaCheckCircle, 
   FaChevronLeft, FaChevronRight, FaRobot, FaTimes, 
@@ -40,6 +41,9 @@
   const PaginatedDataPage = () => {
     const { theme } = useContext(ThemeContext);
     const [readyTheme, setReadyTheme] = useState(theme);
+    const role = getStoredRole();
+    const canEditLabels = role === 'admin' || role === 'doctor';
+    const canRunAutoLabel = role === 'admin';
 
     // Features
     const [autoMove, setAutoMove] = useState(true);
@@ -67,6 +71,8 @@
     const [selectedModels, setSelectedModels] = useState([]);
     const [evalMode, setEvalMode] = useState(false);
     const [prediction, setPrediction] = useState(null);
+    const [settings, setSettings] = useState({ show_missing_weights: true });
+    const [settingsLoading, setSettingsLoading] = useState(false);
 
     // Auto-label state
     const [autoLabelModel, setAutoLabelModel] = useState('ECG1DCNN');
@@ -106,18 +112,28 @@
     }, []);
 
     useEffect(() => {
-      if (evalMode) {
-        API.get("/model_list/")
-          .then((resp) => {
-            setModels(resp.data); // { modelName: {...}, ... }
-            console.log("Models fetched:", resp.data);
-          })
-          .catch((error) => setError("Error fetching models: " + error.message));
-      } else {
-        setModels({}); // clear models when Eval Mode is off
-        setSelectedModels(""); // reset selection
+      API.get("/model_list/")
+        .then((resp) => {
+          setModels(resp.data.models || {});
+        })
+        .catch((error) => setError("Error fetching models: " + error.message));
+    }, []);
+
+    const fetchSettings = async () => {
+      setSettingsLoading(true);
+      try {
+        const response = await API.get('/profile/settings/');
+        setSettings(response.data || { show_missing_weights: true });
+      } catch (err) {
+        console.warn('Could not load profile settings.', err);
+      } finally {
+        setSettingsLoading(false);
       }
-    }, [evalMode]);
+    };
+
+    useEffect(() => {
+      fetchSettings();
+    }, []);
 
 
     // Sync theme variable asynchronously for style updates
@@ -149,7 +165,7 @@
 
     // Store which files were selected on last apply so pagination uses them
     const [lastSelectedFiles, setLastSelectedFiles] = useState([]);
-    const lastSelectedFilesRef = React.useRef([]);
+    const lastSelectedFilesRef = useRef([]);
     useEffect(() => {
       lastSelectedFilesRef.current = lastSelectedFiles;
     }, [lastSelectedFiles]);
@@ -307,6 +323,7 @@
     };
 
     const handleLabelButtonClick = (patientId, recordId, labelValue) => {
+      if (!canEditLabels) return;
       setChangedLabels(prev => ({
         ...prev,
         [patientId]: { ...(prev[patientId] || {}), [recordId]: labelValue },
@@ -318,6 +335,7 @@
     };
 
     const handleSaveLabels = async () => {
+      if (!canEditLabels) return;
       const payload = [];
       Object.entries(changedLabels).forEach(([patientId, records]) => {
         Object.entries(records).forEach(([recordId, label]) => {
@@ -341,6 +359,7 @@
     };
 
     const handleAutoLabel = async () => {
+      if (!canRunAutoLabel) return;
       const selectedFileNames = files.filter(f => f.selected).map(f => f.file_name);
       if (selectedFileNames.length === 0) {
         alert('Select at least one file first.');
@@ -372,6 +391,7 @@
     };
 
     const handleVerify = async (recordId, currentVerified) => {
+      if (!canEditLabels) return;
       try {
         await API.post('/verify-label/', {
           record_id: recordId,
@@ -381,6 +401,7 @@
         setData(prev => prev.map(r =>
           r.id === recordId ? { ...r, is_verified: !currentVerified } : r
         ));
+        setPlotRow(prev => prev && prev.id === recordId ? { ...prev, is_verified: !currentVerified } : prev);
       } catch (err) {
         alert('Failed to update verification: ' + (err.response?.data?.error || err.message));
       }
@@ -417,6 +438,11 @@
 
     const getCurrentLabel = (patientId, recordId, defaultLabel) =>
       changedLabels[patientId]?.[recordId] ?? defaultLabel ?? '--Not Labeled--';
+
+    const filteredModels = Object.entries(models).filter(([id, info]) => {
+      if (settings.show_missing_weights === false && !info.available) return false;
+      return true;
+    });
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--bg)' }}>
@@ -481,6 +507,7 @@
                     </div>
 
                     {/* AI Auto-Label settings moved here */}
+                    {canRunAutoLabel && (
                     <div className="pt-3 border-t border-[var(--border)] space-y-3">
                       <div className="flex justify-between items-center">
                         <p className="text-[10px] uppercase font-bold text-gray-400">AI Background Jobs</p>
@@ -491,8 +518,8 @@
                           onChange={e => setAutoLabelModel(e.target.value)}
                           className="flex-1 bg-[var(--card-bg)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)]"
                         >
-                          {Object.entries(models).length > 0
-                            ? Object.entries(models).map(([name, info]) => (
+                          {filteredModels.length > 0
+                            ? filteredModels.map(([name, info]) => (
                                 <option key={name} value={name} disabled={!info.available}>{info.label}</option>
                               ))
                             : <option value="ECG1DCNN">ECG1DCNN (Baseline)</option>
@@ -512,6 +539,7 @@
                         </div>
                       )}
                     </div>
+                    )}
                   </div>
                 )}
 
@@ -655,14 +683,16 @@
                               <option value="chartjs">Chart.js (Classic)</option>
                             </select>
                           </div>
-                          <button
-                            onClick={() => handleSaveLabels()}
-                            disabled={!hasUnsavedChanges}
-                            className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-widest transition-all
-                              ${hasUnsavedChanges ? 'bg-green-600 border-green-600 text-white shadow-sm' : 'bg-[var(--highlight)] text-gray-400 border-[var(--border)]'}`}
-                          >
-                            <FaSave className="inline mr-1" /> Commit Changes
-                          </button>
+                          {canEditLabels && (
+                            <button
+                              onClick={() => handleSaveLabels()}
+                              disabled={!hasUnsavedChanges}
+                              className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-widest transition-all
+                                ${hasUnsavedChanges ? 'bg-green-600 border-green-600 text-white shadow-sm' : 'bg-[var(--highlight)] text-gray-400 border-[var(--border)]'}`}
+                            >
+                              <FaSave className="inline mr-1" /> Commit Changes
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -678,6 +708,7 @@
                     </div>
 
                     {/* Labeling Controls Overlay */}
+                    {canEditLabels && (
                     <div className="mt-8 grid grid-cols-2 lg:grid-cols-4 gap-3">
                        {labelOptions.map(opt => {
                           const isSelected = getCurrentLabel(plotRow.patient_id, plotRow.id) === opt.value;
@@ -696,6 +727,7 @@
                           );
                        })}
                      </div>
+                    )}
 
                      {/* Multi-Model Consensus Sidebar/Section */}
                      <div className="mt-8 pt-6 border-t border-[var(--border)] space-y-4">
@@ -715,11 +747,11 @@
                               {multiModelResults && Object.entries(multiModelResults).map(([mId, res]) => (
                                  <div 
                                     key={mId}
-                                    onClick={() => !res.error && plotRow && handleLabelButtonClick(plotRow.patient_id, plotRow.id, res.predicted_class)}
-                                    className={`p-3 rounded-lg border transition-all cursor-pointer group flex items-center justify-between ${
+                                    onClick={() => canEditLabels && !res.error && plotRow && handleLabelButtonClick(plotRow.patient_id, plotRow.id, res.predicted_class)}
+                                    className={`p-3 rounded-lg border transition-all group flex items-center justify-between ${
                                       res.error 
                                       ? 'bg-red-50/5 border-red-500/10 opacity-50 grayscale' 
-                                      : 'bg-[var(--highlight)] border-[var(--border)] hover:border-[var(--accent)]'
+                                      : `bg-[var(--highlight)] border-[var(--border)] ${canEditLabels ? 'hover:border-[var(--accent)] cursor-pointer' : ''}`
                                     }`}
                                  >
                                     <div className="space-y-0.5">
@@ -728,7 +760,7 @@
                                           {res.error ? 'Weights Missing' : res.predicted_class_name}
                                        </p>
                                     </div>
-                                    {!res.error && (
+                                    {!res.error && canEditLabels && (
                                        <div className="text-[9px] font-mono font-bold text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity">
                                           APPLY
                                        </div>
@@ -745,15 +777,17 @@
                            <button onClick={() => navigatePlot('next')} className="w-8 h-8 rounded border border-[var(--border)] flex items-center justify-center hover:bg-[var(--highlight)] text-[var(--text)] transition-all">→</button>
                         </div>
                         <div className="flex items-center gap-2">
-                           <button
-                             onClick={() => handleVerify(plotRow.id, !plotRow.is_verified)}
-                             className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-wider transition-all
-                               ${plotRow.is_verified 
-                                ? 'bg-green-600 border-green-600 text-white shadow-sm' 
-                                : 'bg-[var(--highlight)] border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]'}`}
-                           >
-                               {plotRow.is_verified ? <><FaCheckCircle className="inline mr-1" /> Verified</> : 'Verify'}
-                           </button>
+                           {canEditLabels && (
+                             <button
+                               onClick={() => handleVerify(plotRow.id, plotRow.is_verified)}
+                               className={`px-4 py-1.5 rounded border font-bold text-[10px] uppercase tracking-wider transition-all
+                                 ${plotRow.is_verified 
+                                  ? 'bg-green-600 border-green-600 text-white shadow-sm' 
+                                  : 'bg-[var(--highlight)] border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]'}`}
+                             >
+                                 {plotRow.is_verified ? <><FaCheckCircle className="inline mr-1" /> Verified</> : 'Verify'}
+                             </button>
+                           )}
                         </div>
                     </div>
                   </>

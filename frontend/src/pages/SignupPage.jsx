@@ -6,7 +6,7 @@ import { ThemeContext } from '../components/context/ThemeContext';
 
 const SignupPage = () => {
   const { theme } = useContext(ThemeContext);
-  const [form, setForm] = useState({ username: '', password: '' });
+  const [form, setForm] = useState({ username: '', password: '', role: 'doctor', patient_id: '' });
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -20,11 +20,26 @@ const SignupPage = () => {
     setError('');
     setMessage('');
     try {
-      await API.post('/register/', form);
+      const payload = {
+        username: form.username,
+        password: form.password,
+        role: form.role,
+        ...(form.role === 'patient' ? { patient_id: form.patient_id } : {}),
+      };
+      await API.post('/register/', payload);
       setMessage('Registration successful! Redirecting to login...');
       setTimeout(() => navigate('/login'), 2000);
-    } catch {
-      setError('Registration failed: Please try again.');
+    } catch (err) {
+      const data = err.response?.data;
+      const firstFieldError = data && typeof data === 'object'
+        ? Object.values(data).find((value) => Array.isArray(value) && value.length > 0)?.[0]
+        : null;
+      setError(
+        data?.error ||
+        data?.detail ||
+        firstFieldError ||
+        'Registration failed: Please try again.'
+      );
     } finally {
       setLoading(false);
     }
@@ -61,6 +76,25 @@ const SignupPage = () => {
               autoComplete="new-password"
               className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
             />
+            <select
+              name="role"
+              value={form.role}
+              onChange={handleChange}
+              className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
+            >
+              <option value="doctor">Doctor</option>
+              <option value="patient">Patient</option>
+            </select>
+            {form.role === 'patient' && (
+              <input
+                name="patient_id"
+                placeholder="Patient ID"
+                value={form.patient_id}
+                onChange={handleChange}
+                required
+                className="px-3 py-2 border border-[var(--border)] rounded focus:outline-none focus:ring-2 focus:ring-[var(--accent)] bg-[var(--card-bg)] text-[var(--text)] text-sm"
+              />
+            )}
             {error && <p className="text-[var(--danger)] text-center text-sm">{error}</p>}
             {message && <p className="text-[var(--accent)] text-center text-sm">{message}</p>}
             <button

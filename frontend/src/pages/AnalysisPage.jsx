@@ -36,6 +36,8 @@ const AnalysisPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedModel, setSelectedModel] = useState(null);
+  const [settings, setSettings] = useState({ default_plot_library: 'echarts' });
+  const [settingsLoading, setSettingsLoading] = useState(false);
 
   const fetchAnalysis = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,22 @@ const AnalysisPage = () => {
   useEffect(() => {
     fetchAnalysis();
   }, [fetchAnalysis]);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      setSettingsLoading(true);
+      try {
+        const resp = await API.get('/profile/settings/');
+        setSettings(resp.data || { default_plot_library: 'echarts' });
+      } catch (err) {
+        console.warn('Could not load profile settings.', err);
+      } finally {
+        setSettingsLoading(false);
+      }
+    };
+
+    fetchSettings();
+  }, []);
 
   const getConfusionOptions = () => {
     if (!data || !selectedModel || !data.results[selectedModel] || data.results[selectedModel].error) return {};
@@ -123,6 +141,37 @@ const AnalysisPage = () => {
   };
 
   const selectedModelData = data?.results?.[selectedModel];
+  const plotLibrary = settings.default_plot_library || 'echarts';
+
+  const renderConfusionTable = () => {
+    if (!selectedModelData || selectedModelData.error || !selectedModelData.confusion_matrix) return null;
+    const matrix = selectedModelData.confusion_matrix;
+    const names = data.label_names || [];
+    return (
+      <div className="overflow-auto h-full">
+        <table className="min-w-full border-collapse text-[10px]">
+          <thead>
+            <tr>
+              <th className="border border-[var(--border)] px-2 py-2 text-left">Actual \ Predicted</th>
+              {names.map((name) => (
+                <th key={name} className="border border-[var(--border)] px-2 py-2 text-left">{name}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                <td className="border border-[var(--border)] px-2 py-2 font-bold">{names[rowIndex] || rowIndex}</td>
+                {row.map((value, colIndex) => (
+                  <td key={colIndex} className="border border-[var(--border)] px-2 py-2 text-center">{value}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--bg)] text-[var(--text)] transition-colors duration-300">
@@ -228,16 +277,23 @@ const AnalysisPage = () => {
                       </div>
 
                       <div className="h-[420px] w-full">
-                        {ReactECharts ? (
-                          <ReactECharts 
-                            option={getConfusionOptions()} 
-                            style={{ height: '100%', width: '100%' }}
-                            theme={theme === 'dark' ? 'dark' : ''}
-                            notMerge={true}
-                          />
+                        {plotLibrary === 'echarts' ? (
+                          ReactECharts ? (
+                            <ReactECharts 
+                              option={getConfusionOptions()} 
+                              style={{ height: '100%', width: '100%' }}
+                              theme={theme === 'dark' ? 'dark' : ''}
+                              notMerge={true}
+                            />
+                          ) : (
+                            <div className="h-full flex items-center justify-center text-gray-400 text-xs">
+                              ECharts not available. Run <code className="mx-1 font-mono">npm install echarts</code> to enable heatmaps.
+                            </div>
+                          )
                         ) : (
-                          <div className="h-full flex items-center justify-center text-gray-400 text-xs">
-                            ECharts not available. Run <code className="mx-1 font-mono">npm install echarts</code> to enable heatmaps.
+                          <div className="h-full p-4 bg-[var(--highlight)] rounded-lg border border-[var(--border)] overflow-auto">
+                            <p className="text-[10px] font-bold uppercase text-gray-500 mb-3">Confusion Matrix Table</p>
+                            {renderConfusionTable()}
                           </div>
                         )}
                       </div>

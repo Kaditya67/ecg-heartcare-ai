@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     FileUploadView,
     ECGRecordListView,
@@ -16,16 +17,20 @@ from .views import (
     PredictECGView,
     ModelListView,
     DriveModelListView,
+    DeployedModelRegistryView,
     AutoLabelView,
     ModelCompareView,
     ModelAnalysisView,
+    PatientModelAssignmentView,
     VerifyLabelView,
     TrainModelView,
     TrainJobListView,
     TrainStatusView,
+    CurrentUserView,
+    AuthorizeUserView,
 )
 from .views import RegisterView, LoginView
-from .views import dialogflow_webhook
+from .views import dialogflow_webhook, UserSettingsView
 
 router = DefaultRouter()
 router.register(r'ecgfiles', ECGFileViewSet, basename='ecgfile')
@@ -45,8 +50,14 @@ urlpatterns = [
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', LoginView.as_view(), name='login'),
+    path('profile/settings/', UserSettingsView.as_view(), name='user-settings'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
+    path('me/', CurrentUserView.as_view(), name='current-user'),
+    path('authorize-user/', AuthorizeUserView.as_view(), name='authorize-user'),
     path('predict-ecg/', PredictECGView.as_view(), name='predict-ecg'),
     path('model_list/', ModelListView.as_view(), name='model-list'),
+    path('models/registry/', DeployedModelRegistryView.as_view(), name='deployed-model-registry'),
+    path('models/assignments/', PatientModelAssignmentView.as_view(), name='patient-model-assignment'),
     path('drive-models/', DriveModelListView.as_view(), name='drive-models'),
     path('auto-label/', AutoLabelView.as_view(), name='auto-label'),
     path('model-compare/', ModelCompareView.as_view(), name='model-compare'),

@@ -3,6 +3,7 @@ import API from '../api/api';
 import { useNavigate, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { ThemeContext } from '../components/context/ThemeContext';
+import { storeAuthSession } from '../utils/auth';
 
 const LoginPage = () => {
   const { theme } = useContext(ThemeContext);
@@ -20,8 +21,7 @@ const LoginPage = () => {
     try {
       console.log('Logging in with:', form);
       const res = await API.post('/login/', form);
-      localStorage.setItem('accessToken', res.data.access);
-      localStorage.setItem('refreshToken', res.data.refresh);
+      storeAuthSession(res.data);
       navigate('/dashboard');
     } catch {
       setError('Login failed: Invalid username or password');

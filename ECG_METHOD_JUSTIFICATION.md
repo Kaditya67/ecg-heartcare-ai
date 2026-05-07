@@ -190,6 +190,3 @@ This pipeline was chosen because it combines:
 - rhythm context modeling,
 - prototype-based explainability,
 - and safe uncertainty handling.
-
-That combination is stronger than any single-method approach for your ECG use case.
-

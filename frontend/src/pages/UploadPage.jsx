@@ -4,8 +4,84 @@ import DashboardNavbar from '../components/DashboardNavbar';
 import Footer from '../components/Footer';
 import { ThemeContext } from '../components/context/ThemeContext';
 import { FaFileUpload, FaFileCsv, FaFileExcel, FaTrashAlt, FaHistory, FaCloudUploadAlt } from 'react-icons/fa';
+import * as XLSX from 'xlsx';
+import Papa from 'papaparse';
 
 const MAX_FILE_SIZE = 1064 * 1024 * 1024; // 1GB
+const REQUIRED_COLUMNS = ['patient_id', 'ecg_wave', 'heart_rate', 'label'];
+const COLUMN_ALIASES = {
+  patient_id: ['patient_id', 'Patient ID', 'patient id', 'PatientID', 'patientID', 'PatientId'],
+  ecg_wave: ['ecg_wave', 'ECG Wave', 'ecg wave', 'ecgWave', 'ValueStr', 'ECG', 'Ecgwave'],
+  heart_rate: ['heart_rate', 'Heart Rate', 'heart rate', 'Heartrate', 'Value', 'HeartRate', 'HR'],
+  label: ['label', 'Label', 'Diagnosis', 'Class'],
+};
+
+const normalizeColumnKey = (value) => String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+const buildLocalMappingInfo = (columns = [], previewRows = []) => {
+  const availableColumns = columns.map((column) => String(column));
+  const normalizedAvailable = new Map(
+    availableColumns.map((column) => [normalizeColumnKey(column), column])
+  );
+
+  const suggestedMapping = {};
+  REQUIRED_COLUMNS.forEach((field) => {
+    const candidates = [field, ...(COLUMN_ALIASES[field] || [])];
+    const match = candidates
+      .map((candidate) => normalizedAvailable.get(normalizeColumnKey(candidate)))
+      .find(Boolean);
+    if (match) {
+      suggestedMapping[field] = match;
+    }
+  });
+
+  return {
+    available_columns: availableColumns,
+    missing_required_columns: REQUIRED_COLUMNS.filter((field) => !suggestedMapping[field]),
+    suggested_mapping: suggestedMapping,
+    preview_rows: previewRows.slice(0, 5).map((row) => {
+      const normalizedRow = {};
+      availableColumns.forEach((column) => {
+        const value = row?.[column];
+        normalizedRow[column] = value == null ? '' : String(value);
+      });
+      return normalizedRow;
+    }),
+  };
+};
+
+const parseSelectedFile = (file) => new Promise((resolve, reject) => {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+
+  if (extension === 'csv') {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      preview: 5,
+      complete: (results) => {
+        const columns = results.meta?.fields || [];
+        resolve(buildLocalMappingInfo(columns, results.data || []));
+      },
+      error: (error) => reject(error),
+    });
+    return;
+  }
+
+  if (extension === 'xls' || extension === 'xlsx') {
+    file.arrayBuffer()
+      .then((data) => {
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const previewRows = XLSX.utils.sheet_to_json(firstSheet, { defval: '' }).slice(0, 5);
+        const headerRow = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' })[0] || [];
+        resolve(buildLocalMappingInfo(headerRow, previewRows));
+      })
+      .catch(reject);
+    return;
+  }
+
+  reject(new Error('Only CSV, XLSX, or XLS files are supported.'));
+});
 
 const LoadingOverlay = ({ loading, children, text = "Loading..." }) => (
   <div className="relative">
@@ -22,15 +98,18 @@ const LoadingOverlay = ({ loading, children, text = "Loading..." }) => (
 );
 
 const UploadPage = () => {
-  const { theme } = useContext(ThemeContext);
+  useContext(ThemeContext);
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [parsingFile, setParsingFile] = useState(false);
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [customName, setCustomName] = useState('');
+  const [mappingInfo, setMappingInfo] = useState(null);
+  const [columnMapping, setColumnMapping] = useState({});
   const fileInputRef = useRef(null); // 1. Create ref
 
   const fetchFiles = useCallback(async () => {
@@ -49,14 +128,47 @@ const UploadPage = () => {
     fetchFiles();
   }, [fetchFiles]);
 
-  const handleChooseFile = e => {
+  const handleChooseFile = async (e) => {
     const file = e.target.files[0];
-    setSelectedFile(file);
-    setCustomName(file?.name.replace(/\.[^/.]+$/, ""));
+    setSelectedFile(file || null);
+    setCustomName(file?.name.replace(/\.[^/.]+$/, "") || '');
     setErrorMsg('');
+    setMappingInfo(null);
+    setColumnMapping({});
+
+    if (!file) {
+      return;
+    }
+
+    setParsingFile(true);
+    try {
+      const localMappingInfo = await parseSelectedFile(file);
+      setMappingInfo(localMappingInfo);
+      setColumnMapping(
+        Object.fromEntries(
+          REQUIRED_COLUMNS.map((field) => [field, localMappingInfo.suggested_mapping?.[field] || ''])
+        )
+      );
+    } catch (error) {
+      setErrorMsg(error.message || 'Could not read the selected file.');
+    } finally {
+      setParsingFile(false);
+    }
   };
 
-  const handleFileUpload = async () => {
+  const resetUploadState = () => {
+    setSelectedFile(null);
+    setCustomName('');
+    setUploadProgress(0);
+    setMappingInfo(null);
+    setColumnMapping({});
+    setParsingFile(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = null;
+    }
+  };
+
+  const handleFileUpload = async (withMapping = false) => {
     setErrorMsg('');
     setUploadProgress(0);
 
@@ -64,6 +176,17 @@ const UploadPage = () => {
       setErrorMsg('Select a file first!');
       return;
     }
+
+    const shouldSendMapping = withMapping || Object.values(columnMapping).some(Boolean);
+
+    if (shouldSendMapping && mappingInfo?.available_columns?.length) {
+      const missingMappings = REQUIRED_COLUMNS.filter((col) => !columnMapping[col]);
+      if (missingMappings.length > 0) {
+        setErrorMsg(`Map all required fields before retrying: ${missingMappings.join(', ')}`);
+        return;
+      }
+    }
+
     if (selectedFile.size > MAX_FILE_SIZE) {
       setErrorMsg('File too large! Max size is 1GB.');
       return;
@@ -78,6 +201,15 @@ const UploadPage = () => {
     const fileToUpload = new File([selectedFile], newName, { type: selectedFile.type });
     const formData = new FormData();
     formData.append('file', fileToUpload);
+    if (shouldSendMapping) {
+      const sanitizedMapping = Object.fromEntries(
+        REQUIRED_COLUMNS.map((field) => [field, columnMapping[field] || ''])
+      );
+      formData.append('column_mapping', JSON.stringify(sanitizedMapping));
+      REQUIRED_COLUMNS.forEach((field) => {
+        formData.append(`column_mapping_${field}`, sanitizedMapping[field]);
+      });
+    }
 
     try {
       await API.post('/upload/', formData, {
@@ -89,15 +221,24 @@ const UploadPage = () => {
         }
       });
       await fetchFiles();
-      setSelectedFile(null);
-      setCustomName('');
-      setUploadProgress(0);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = null; // 2. Reset file input value
-      }
+      resetUploadState();
     } catch (error) {
       if (error.response && error.response.data) {
-        setErrorMsg(error.response.data.error || 'Upload failed, please try again.');
+        const payload = error.response.data;
+        if (payload.available_columns && payload.missing_required_columns) {
+          setMappingInfo(payload);
+          setColumnMapping((prev) => ({
+            ...prev,
+            ...Object.fromEntries(
+              REQUIRED_COLUMNS.map((col) => [col, payload.suggested_mapping?.[col] || prev[col] || ''])
+            ),
+          }));
+          setErrorMsg(payload.error || 'Column mapping is required for this file.');
+        } else {
+          setErrorMsg(payload.error || 'Upload failed, please try again.');
+        }
+      } else {
+        setErrorMsg('Upload failed, please try again.');
       }
     } finally {
       setUploading(false);
@@ -170,11 +311,17 @@ const UploadPage = () => {
                   </div>
                   
                   <button
-                    onClick={handleFileUpload}
-                    disabled={uploading}
+                    onClick={() => handleFileUpload(false)}
+                    disabled={uploading || parsingFile}
                     className="w-full py-2 bg-[var(--accent)] hover:bg-blue-600 text-white rounded-lg text-xs font-bold uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {uploading ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Processing</> : <><FaFileUpload /> Launch Upload</>}
+                    {parsingFile ? (
+                      <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Reading Columns</>
+                    ) : uploading ? (
+                      <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Processing</>
+                    ) : (
+                      <><FaFileUpload /> Launch Upload</>
+                    )}
                   </button>
                 </div>
               )}
@@ -200,6 +347,101 @@ const UploadPage = () => {
             <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-500/50 rounded-lg flex items-center gap-3 text-red-600 dark:text-red-400 text-xs font-bold">
               <span>⚠️</span> {errorMsg}
             </div>
+          )}
+
+          {mappingInfo?.available_columns?.length > 0 && (
+            <section className="card space-y-5">
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold">Column Mapping</h3>
+                <p className="text-[11px] text-gray-500">
+                  Choose which file column should be used for each required field before upload. We prefill likely matches when we can, and you can change them here if your CSV or Excel headers use different names.
+                </p>
+              </div>
+
+              {mappingInfo.missing_required_columns?.length === 0 ? (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-500/30 rounded-lg text-[11px] text-emerald-700 dark:text-emerald-300">
+                  All required fields were detected automatically. You can still adjust the mapping before uploading.
+                </div>
+              ) : (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-500/30 rounded-lg text-[11px] text-amber-700 dark:text-amber-300">
+                  Some required fields were not matched automatically. Please choose them below before uploading.
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {REQUIRED_COLUMNS.map((field) => (
+                  <div key={field} className="space-y-1.5">
+                    <label className="text-[10px] font-bold uppercase text-gray-500">
+                      {field.replace('_', ' ')}
+                    </label>
+                    <select
+                      value={columnMapping[field] || ''}
+                      onChange={(e) => setColumnMapping((prev) => ({ ...prev, [field]: e.target.value }))}
+                      className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                    >
+                      <option value="">Select a column</option>
+                      {mappingInfo.available_columns.map((column) => (
+                        <option key={column} value={column}>
+                          {column}
+                        </option>
+                      ))}
+                    </select>
+                    {mappingInfo.suggested_mapping?.[field] && (
+                      <p className="text-[10px] text-gray-400">
+                        Suggested: <span className="font-semibold">{mappingInfo.suggested_mapping[field]}</span>
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {mappingInfo.preview_rows?.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Preview Rows</h4>
+                  <div className="overflow-auto border border-[var(--border)] rounded-lg">
+                    <table className="min-w-full text-left text-[11px]">
+                      <thead className="bg-[var(--highlight)]">
+                        <tr>
+                          {mappingInfo.available_columns.map((column) => (
+                            <th key={column} className="px-3 py-2 font-bold uppercase text-[10px] text-gray-500">
+                              {column}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mappingInfo.preview_rows.map((row, index) => (
+                          <tr key={index} className="border-t border-[var(--border)]">
+                            {mappingInfo.available_columns.map((column) => (
+                              <td key={`${index}-${column}`} className="px-3 py-2 align-top text-[var(--text)]">
+                                {row[column] || <span className="text-gray-400">-</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleFileUpload(true)}
+                  disabled={uploading || parsingFile}
+                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-blue-600 disabled:opacity-50"
+                >
+                  Upload With Mapping
+                </button>
+                <button
+                  onClick={resetUploadState}
+                  disabled={uploading || parsingFile}
+                  className="px-4 py-2 border border-[var(--border)] rounded-lg text-xs font-bold uppercase tracking-widest hover:border-[var(--accent)]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </section>
           )}
 
           {/* History Section */}

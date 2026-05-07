@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
 import { ThemeContext } from './context/ThemeContext';
 import { useNavigate } from 'react-router-dom';
+import { clearAuthSession, getStoredRole, getStoredUser } from '../utils/auth';
 
 const SunIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none"
@@ -22,23 +23,24 @@ const MoonIcon = () => (
 const DashboardNavbar = () => {
   const { theme, toggleTheme } = useContext(ThemeContext);
   const location = useLocation();
+  const role = getStoredRole();
+  const user = getStoredUser();
 
   const navLinks = [
-    { name: 'Dashboard', path: '/dashboard' },
-    { name: 'Files', path: '/upload' },
-    { name: 'EcgLabel', path: '/EcgLabel' },
-    { name: 'Custom', path: '/custom' },
-    { name: 'Models', path: '/models' },
-    { name: 'Training', path: '/training' },
-    { name: 'Analysis', path: '/analysis' },
-  ];
+    { name: 'Dashboard', path: '/dashboard', roles: ['admin', 'doctor', 'patient'] },
+    { name: 'Files', path: '/upload', roles: ['admin'] },
+    { name: 'EcgLabel', path: '/EcgLabel', roles: ['admin', 'doctor', 'patient'] },
+    { name: 'Custom', path: '/custom', roles: ['admin', 'doctor', 'patient'] },
+    { name: 'Models', path: '/models', roles: ['admin', 'doctor', 'patient'] },
+    { name: 'Training', path: '/training', roles: ['admin'] },
+    { name: 'Analysis', path: '/analysis', roles: ['admin', 'doctor'] },
+    { name: 'Settings', path: '/settings', roles: ['admin', 'doctor', 'patient'] },
+  ].filter((link) => !role || link.roles.includes(role));
 
   const navigate = useNavigate();
 
   const handleLogout = () => {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken'); // If you use this
-    // Optionally clear any user-related state here
+    clearAuthSession();
     navigate('/login'); // Redirect after logout
   };
 
@@ -88,9 +90,9 @@ const DashboardNavbar = () => {
 
         <div className="flex items-center gap-2 cursor-pointer">
           <div className="h-8 w-8 rounded-full bg-[var(--accent)] text-white flex items-center justify-center font-semibold">
-            A
+            {(user?.username?.[0] || 'U').toUpperCase()}
           </div>
-          <span className="text-sm font-medium hidden sm:inline">Aditya</span>
+          <span className="text-sm font-medium hidden sm:inline">{user?.username || 'User'}</span>
         </div>
       </div>
     </nav>

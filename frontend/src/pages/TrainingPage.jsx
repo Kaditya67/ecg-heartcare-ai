@@ -1,52 +1,121 @@
-import React, { useEffect, useState, useRef, useContext } from 'react';
-import API from '../api/api';
-import DashboardNavbar from '../components/DashboardNavbar';
-import { ThemeContext } from '../components/context/ThemeContext';
-import Footer from '../components/Footer';
-import ChatbotWidget from './ChatbotWidget';
-import { FaCogs, FaTerminal, FaHistory, FaBrain, FaPlay } from 'react-icons/fa';
+import React, { useEffect, useState, useRef, useContext } from "react";
+import API from "../api/api";
+import DashboardNavbar from "../components/DashboardNavbar";
+import { ThemeContext } from "../components/context/ThemeContext";
+import Footer from "../components/Footer";
+import ChatbotWidget from "./ChatbotWidget";
+import {
+  FaCogs,
+  FaTerminal,
+  FaHistory,
+  FaBrain,
+  FaPlay,
+  FaTags,
+} from "react-icons/fa";
 
 const TrainingPage = () => {
   const { theme } = useContext(ThemeContext);
   const [models, setModels] = useState({});
+  const [patients, setPatients] = useState([]);
+  const [labels, setLabels] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [selectedModel, setSelectedModel] = useState('ECG1DCNN');
+  const [settings, setSettings] = useState({ show_missing_weights: true });
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("ECG1DCNN");
+  const [selectedPatient, setSelectedPatient] = useState("");
   const [params, setParams] = useState({
     epochs: 30,
     lr: 0.001,
     batch: 64,
-    use_ai_labels: false
+    use_ai_labels: false,
+    max_records: "",
   });
   const [activeJob, setActiveJob] = useState(null); // { job_id, status, logs }
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  
+  const [error, setError] = useState("");
+
   const logEndRef = useRef(null);
 
   // Fetch models and jobs on mount
   useEffect(() => {
-    API.get('/model_list/')
-      .then(resp => setModels(resp.data))
-      .catch(err => setError('Failed to load models.'));
-    
+    API.get("/model_list/")
+      .then((resp) => {
+        setModels(resp.data.models || {});
+        const filtered = Object.entries(resp.data.models || {}).filter(
+          ([name, info]) => {
+            return settings.show_missing_weights || info.has_weights;
+          },
+        );
+        const firstKey = filtered[0]?.[0];
+        if (firstKey) {
+          setSelectedModel(firstKey);
+        }
+      })
+      .catch((err) => setError("Failed to load models."));
+    API.get("/patients/count/")
+      .then((resp) => setPatients(resp.data || []))
+      .catch(() => {});
     fetchJobs();
+    fetchSettings();
   }, []);
 
+  // Update selectedModel when settings change
+  useEffect(() => {
+    const filtered = Object.entries(models).filter(([name, info]) => {
+      return settings.show_missing_weights || info.has_weights;
+    });
+    const currentInFiltered = filtered.some(([name]) => name === selectedModel);
+    if (!currentInFiltered && filtered.length > 0) {
+      setSelectedModel(filtered[0][0]);
+    }
+  }, [settings, models, selectedModel]);
+
+  const fetchSettings = async () => {
+    setSettingsLoading(true);
+    try {
+      const response = await API.get("/profile/settings/");
+      setSettings(response.data || { show_missing_weights: true });
+    } catch (err) {
+      console.warn("Could not load profile settings.", err);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const source = params.use_ai_labels ? "ai" : "human";
+    const query = new URLSearchParams({ source });
+    if (selectedPatient) {
+      query.set("patient_id", selectedPatient);
+    }
+    API.get(`/labels/count/?${query.toString()}`)
+      .then((resp) => {
+        setLabels(
+          (resp.data || []).map((label) => ({
+            ...label,
+            selected: true,
+            numRecords: label.count,
+          })),
+        );
+      })
+      .catch(() => setLabels([]));
+  }, [selectedPatient, params.use_ai_labels]);
+
   const fetchJobs = () => {
-    API.get('/train/jobs/')
-      .then(resp => setJobs(resp.data))
+    API.get("/train/jobs/")
+      .then((resp) => setJobs(resp.data))
       .catch(() => {});
   };
 
   // Poll active job status
   useEffect(() => {
     let interval;
-    if (activeJob && activeJob.status === 'running') {
+    if (activeJob && activeJob.status === "running") {
       interval = setInterval(() => {
         API.get(`/train/${activeJob.job_id}/status/`)
-          .then(resp => {
+          .then((resp) => {
             setActiveJob(resp.data);
-            if (resp.data.status !== 'running') {
+            if (resp.data.status !== "running") {
               clearInterval(interval);
               fetchJobs();
             }
@@ -59,21 +128,36 @@ const TrainingPage = () => {
 
   // Auto-scroll logs
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeJob?.logs]);
 
   const handleStartTraining = async () => {
     setLoading(true);
-    setError('');
+    setError("");
     try {
-      const resp = await API.post('/train/', {
+      const selectedLabels = labels
+        .filter((label) => label.selected)
+        .map((label) => ({
+          id: label.id,
+          numRecords: Number(label.numRecords) || 0,
+        }))
+        .filter((label) => label.numRecords > 0);
+      if (selectedLabels.length === 0) {
+        setError("Choose at least one label before training.");
+        setLoading(false);
+        return;
+      }
+
+      const resp = await API.post("/train/", {
         model: selectedModel,
-        ...params
+        patient_id: selectedPatient || null,
+        labels: selectedLabels,
+        ...params,
       });
       setActiveJob({
         job_id: resp.data.job_id,
-        status: 'running',
-        logs: [resp.data.message]
+        status: "running",
+        logs: [resp.data.message],
       });
       fetchJobs();
     } catch (err) {
@@ -83,14 +167,47 @@ const TrainingPage = () => {
     }
   };
 
+  const toggleLabelSelect = (id) => {
+    setLabels((prev) =>
+      prev.map((label) =>
+        label.id === id ? { ...label, selected: !label.selected } : label,
+      ),
+    );
+  };
+
+  const updateLabelNumRecords = (id, value) => {
+    setLabels((prev) =>
+      prev.map((label) => {
+        if (label.id !== id) {
+          return label;
+        }
+        const safeValue = Math.min(
+          Math.max(Number(value) || 1, 1),
+          label.count,
+        );
+        return { ...label, numRecords: safeValue };
+      }),
+    );
+  };
+
+  const filteredModels = Object.entries(models).filter(([name, info]) => {
+    return settings.show_missing_weights || info.has_weights;
+  });
+
   return (
-    <div className={`min-h-screen flex flex-col bg-[var(--bg)] text-[var(--text)] transition-colors duration-300`}>
+    <div
+      className={`min-h-screen flex flex-col bg-[var(--bg)] text-[var(--text)] transition-colors duration-300`}
+    >
       <DashboardNavbar />
-      
+
       <main className="flex-grow container mx-auto px-4 py-10 max-w-6xl">
         <header className="mb-10 text-center">
-          <h1 className="text-3xl font-bold tracking-tight mb-2">Model Training Environment</h1>
-          <p className="text-xs font-bold uppercase tracking-widest text-gray-500">Fine-tune Clinical Inference Engines</p>
+          <h1 className="text-3xl font-bold tracking-tight mb-2">
+            Model Training Environment
+          </h1>
+          <p className="text-xs font-bold uppercase tracking-widest text-gray-500">
+            Fine-tune Clinical Inference Engines
+          </p>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -100,82 +217,208 @@ const TrainingPage = () => {
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-gray-500 mb-6">
                 <FaCogs /> Parameter Configuration
               </div>
-              
+
               <div className="space-y-5">
                 <div>
-                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">Target Architecture</label>
-                  <select 
+                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                    Target Architecture
+                  </label>
+                  <select
                     value={selectedModel}
                     onChange={(e) => setSelectedModel(e.target.value)}
                     className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
                   >
-                    {Object.entries(models).map(([name, info]) => (
-                      <option key={name} value={name}>{info.label}</option>
+                    {filteredModels.map(([name, info]) => (
+                      <option key={name} value={name}>
+                        {info.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                    Patient Scope
+                  </label>
+                  <select
+                    value={selectedPatient}
+                    onChange={(e) => setSelectedPatient(e.target.value)}
+                    className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+                  >
+                    <option value="">All labeled patients</option>
+                    {patients.map((patient) => (
+                      <option
+                        key={patient.patient_id}
+                        value={patient.patient_id}
+                      >
+                        Patient {patient.patient_id} ({patient.record_count}{" "}
+                        records)
+                      </option>
                     ))}
                   </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">Epochs</label>
-                    <input 
+                    <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                      Epochs
+                    </label>
+                    <input
                       type="number"
                       value={params.epochs}
-                      onChange={(e) => setParams({...params, epochs: parseInt(e.target.value)})}
+                      onChange={(e) =>
+                        setParams({
+                          ...params,
+                          epochs: parseInt(e.target.value),
+                        })
+                      }
                       className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">Batch Size</label>
-                    <input 
+                    <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                      Batch Size
+                    </label>
+                    <input
                       type="number"
                       value={params.batch}
-                      onChange={(e) => setParams({...params, batch: parseInt(e.target.value)})}
+                      onChange={(e) =>
+                        setParams({
+                          ...params,
+                          batch: parseInt(e.target.value),
+                        })
+                      }
                       className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">Learning Rate</label>
-                  <input 
+                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                    Learning Rate
+                  </label>
+                  <input
                     type="number"
                     step="0.0001"
                     value={params.lr}
-                    onChange={(e) => setParams({...params, lr: parseFloat(e.target.value)})}
+                    onChange={(e) =>
+                      setParams({ ...params, lr: parseFloat(e.target.value) })
+                    }
                     className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
                   />
                 </div>
 
                 <div className="flex items-center gap-3 pt-2">
-                  <input 
+                  <input
                     type="checkbox"
                     id="use_ai"
                     checked={params.use_ai_labels}
-                    onChange={(e) => setParams({...params, use_ai_labels: e.target.checked})}
+                    onChange={(e) =>
+                      setParams({ ...params, use_ai_labels: e.target.checked })
+                    }
                     className="w-4 h-4 rounded border-[var(--border)] bg-[var(--highlight)] text-[var(--accent)] focus:ring-[var(--accent)]"
                   />
-                  <label htmlFor="use_ai" className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none">Include Silver Labels</label>
+                  <label
+                    htmlFor="use_ai"
+                    className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none"
+                  >
+                    Include Silver Labels
+                  </label>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold uppercase text-gray-400 mb-1.5 block">
+                    Total Record Cap
+                  </label>
+                  <input
+                    type="number"
+                    min="20"
+                    placeholder="Optional"
+                    value={params.max_records}
+                    onChange={(e) =>
+                      setParams({ ...params, max_records: e.target.value })
+                    }
+                    className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+                  />
+                </div>
+
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    <FaTags /> Label Constraints
+                  </div>
+                  <div className="max-h-56 overflow-y-auto pr-2 custom-scrollbar space-y-2">
+                    {labels.length === 0 ? (
+                      <p className="text-[10px] text-gray-400 italic">
+                        No labels found for the current patient/source
+                        selection.
+                      </p>
+                    ) : (
+                      labels.map((label) => (
+                        <div
+                          key={label.id}
+                          className="flex items-center justify-between p-2 rounded-lg bg-[var(--highlight)] border border-[var(--border)]"
+                        >
+                          <label className="flex items-center gap-3 cursor-pointer flex-grow">
+                            <input
+                              type="checkbox"
+                              checked={label.selected}
+                              onChange={() => toggleLabelSelect(label.id)}
+                              className="w-4 h-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                            />
+                            <span className="text-xs font-semibold">
+                              {label.name}
+                            </span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--border)] text-gray-500 font-bold">
+                              {label.count} rec
+                            </span>
+                          </label>
+                          {label.selected && (
+                            <input
+                              type="number"
+                              min={1}
+                              max={label.count}
+                              value={label.numRecords}
+                              onChange={(e) =>
+                                updateLabelNumRecords(label.id, e.target.value)
+                              }
+                              className="w-20 bg-[var(--card-bg)] border border-[var(--border)] rounded px-2 py-1 text-[10px] font-bold outline-none focus:border-[var(--accent)]"
+                            />
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
 
                 <button
                   onClick={handleStartTraining}
-                  disabled={loading || (activeJob && activeJob.status === 'running')}
+                  disabled={
+                    loading || (activeJob && activeJob.status === "running")
+                  }
                   className={`w-full py-4 mt-4 rounded-xl text-white font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center gap-3 shadow-lg ${
-                    loading || (activeJob && activeJob.status === 'running')
-                    ? 'bg-gray-400 cursor-not-allowed opacity-50' 
-                    : 'bg-[var(--accent)] hover:shadow-[var(--accent)]/20 active:scale-[0.98]'
+                    loading || (activeJob && activeJob.status === "running")
+                      ? "bg-gray-400 cursor-not-allowed opacity-50"
+                      : "bg-[var(--accent)] hover:shadow-[var(--accent)]/20 active:scale-[0.98]"
                   }`}
                 >
                   {loading ? (
-                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> INITIALIZING...</>
-                  ) : activeJob?.status === 'running' ? (
-                    'TRAINING IN PROGRESS'
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>{" "}
+                      INITIALIZING...
+                    </>
+                  ) : activeJob?.status === "running" ? (
+                    "TRAINING IN PROGRESS"
                   ) : (
-                    <><FaPlay size={12} /> DEPLOY TRAINING JOB</>
+                    <>
+                      <FaPlay size={12} /> DEPLOY TRAINING JOB
+                    </>
                   )}
                 </button>
-                {error && <p className="text-red-500 text-[10px] font-bold uppercase mt-2 text-center">{error}</p>}
+                {error && (
+                  <p className="text-red-500 text-[10px] font-bold uppercase mt-2 text-center">
+                    {error}
+                  </p>
+                )}
               </div>
             </section>
 
@@ -185,22 +428,37 @@ const TrainingPage = () => {
               </div>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                 {jobs.length === 0 ? (
-                  <p className="text-[10px] text-gray-400 italic uppercase tracking-widest text-center py-4">No recent sessions</p>
+                  <p className="text-[10px] text-gray-400 italic uppercase tracking-widest text-center py-4">
+                    No recent sessions
+                  </p>
                 ) : (
-                  jobs.map(job => (
-                    <div 
+                  jobs.map((job) => (
+                    <div
                       key={job.job_id}
-                      onClick={() => setActiveJob({ ...job, logs: [] })} 
+                      onClick={() => setActiveJob({ ...job, logs: [] })}
                       className="p-3 bg-[var(--highlight)] rounded-lg border border-[var(--border)] cursor-pointer hover:border-[var(--accent)] transition-all flex justify-between items-center group"
                     >
                       <div className="space-y-0.5">
-                        <div className="text-[11px] font-bold uppercase">{job.model}</div>
-                        <div className="text-[9px] text-gray-400 font-mono tracking-tighter">{job.job_id}</div>
+                        <div className="text-[11px] font-bold uppercase">
+                          {job.model}
+                        </div>
+                        <div className="text-[9px] text-gray-400 font-mono tracking-tighter">
+                          {job.job_id}
+                          {job.patient_id
+                            ? ` • patient ${job.patient_id}`
+                            : " • all patients"}
+                          {job.max_records ? ` • cap ${job.max_records}` : ""}
+                        </div>
                       </div>
-                      <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase font-bold border ${
-                        job.status === 'done' ? 'bg-green-100/10 border-green-500/20 text-green-500' : 
-                        job.status === 'running' ? 'bg-blue-100/10 border-blue-500/20 text-blue-500' : 'bg-red-100/10 border-red-500/20 text-red-500'
-                      }`}>
+                      <span
+                        className={`text-[9px] px-2 py-0.5 rounded-full uppercase font-bold border ${
+                          job.status === "done"
+                            ? "bg-green-100/10 border-green-500/20 text-green-500"
+                            : job.status === "running"
+                              ? "bg-blue-100/10 border-blue-500/20 text-blue-500"
+                              : "bg-red-100/10 border-red-500/20 text-red-500"
+                        }`}
+                      >
                         {job.status}
                       </span>
                     </div>
@@ -226,29 +484,41 @@ const TrainingPage = () => {
                   </div>
                 </div>
                 <div className="text-[9px] font-mono text-gray-600 tracking-tight">
-                  {activeJob ? `process::${activeJob.job_id}` : 'system::standby'}
+                  {activeJob
+                    ? `process::${activeJob.job_id}`
+                    : "system::standby"}
                 </div>
               </div>
-              
+
               <div className="flex-grow p-6 font-mono text-xs overflow-y-auto custom-scrollbar bg-black selection:bg-[var(--accent)] selection:text-white">
                 {!activeJob ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-700 gap-6 opacity-30">
                     <FaBrain size={48} />
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-center max-w-[200px] leading-relaxed">
-                      Initialize session parameters to monitor real-time inference optimization
+                      Initialize session parameters to monitor real-time
+                      inference optimization
                     </p>
                   </div>
                 ) : (
                   <div className="space-y-1.5">
                     {activeJob.logs?.map((line, i) => (
                       <div key={i} className="flex gap-4 group">
-                        <span className="text-gray-800 select-none min-w-[20px] text-right font-bold">{i+1}</span>
-                        <span className={
-                          line.includes('ERROR') ? 'text-red-500' : 
-                          line.includes('BEST') ? 'text-[var(--accent)] font-bold' : 
-                          line.includes('complete') ? 'text-green-500 font-bold' : 
-                          line.includes('Epoch') ? 'text-blue-400' : 'text-gray-400'
-                        }>
+                        <span className="text-gray-800 select-none min-w-[20px] text-right font-bold">
+                          {i + 1}
+                        </span>
+                        <span
+                          className={
+                            line.includes("ERROR")
+                              ? "text-red-500"
+                              : line.includes("BEST")
+                                ? "text-[var(--accent)] font-bold"
+                                : line.includes("complete")
+                                  ? "text-green-500 font-bold"
+                                  : line.includes("Epoch")
+                                    ? "text-blue-400"
+                                    : "text-gray-400"
+                          }
+                        >
                           {line}
                         </span>
                       </div>
@@ -258,12 +528,14 @@ const TrainingPage = () => {
                 )}
               </div>
 
-              {activeJob?.status === 'running' && (
+              {activeJob?.status === "running" && (
                 <div className="bg-[#0a0a0a] px-6 py-4 border-t border-white/5 flex items-center gap-4">
                   <div className="flex-grow bg-white/5 h-1 rounded-full overflow-hidden">
                     <div className="bg-[var(--accent)] h-full w-2/3 animate-[shimmer_2s_infinite]"></div>
                   </div>
-                  <span className="text-[10px] text-[var(--accent)] font-bold tracking-[0.2em] animate-pulse">OPTIMIZING_WEIGHTS</span>
+                  <span className="text-[10px] text-[var(--accent)] font-bold tracking-[0.2em] animate-pulse">
+                    OPTIMIZING_WEIGHTS
+                  </span>
                 </div>
               )}
             </section>
@@ -273,16 +545,29 @@ const TrainingPage = () => {
 
       <Footer />
       <ChatbotWidget />
-      
+
       <style jsx>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
-        
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
+
         @keyframes shimmer {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
+          0% {
+            transform: translateX(-100%);
+          }
+          100% {
+            transform: translateX(100%);
+          }
         }
       `}</style>
     </div>

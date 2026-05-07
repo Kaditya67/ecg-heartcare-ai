@@ -3,21 +3,24 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from collections import defaultdict
+from pathlib import Path
+from os import path as ospath
 
 import gdown
 import pandas as pd
 import torch
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
-from django.db import IntegrityError, transaction
-from django.db.models import Count
+from django.db import OperationalError, transaction
+from django.db.models import Count, Q
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
@@ -25,22 +28,159 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters import rest_framework as filters
 
-from .models import ECGFile, ECGLabel, ECGRecord
+from .models import (
+    DeployedModel,
+    ECGFile,
+    ECGLabel,
+    ECGRecord,
+    PatientModelAssignment,
+    Profile,
+)
+from .Model_architechture.MLModels import (
+    AdaBoostECGWrapper,
+    ECGXGBoostWrapper,
+    RandomForestECGWrapper,
+)
 from .models_loader import MODEL_MAP
-from .serializers import (ECGFileSerializer, ECGRecordDetailSerializer,
-                          ECGRecordSerializer, ECGWaveSerializer,
-                          RegisterSerializer)
+from .permissions import IsAdminRole, IsDoctorOrAdmin, get_user_role
+from .serializers import (DeployedModelSerializer, ECGFileSerializer,
+                          ECGRecordDetailSerializer, ECGRecordSerializer,
+                          ECGWaveSerializer, PatientModelAssignmentSerializer,
+                          ProfileSerializer, RegisterSerializer, UserSerializer)
 from .utils.redis_client import get_ecg_wave, set_ecg_wave
 
 logger = logging.getLogger(__name__)
+LOCAL_MODELS_FOLDER = "api/models"
+UPLOADED_MODELS_FOLDER = "api/models/uploads"
+os.makedirs(Path(Path(__file__).resolve().parent / "models"), exist_ok=True)
+os.makedirs(Path(Path(__file__).resolve().parent / "models" / "uploads"), exist_ok=True)
 
 # Define canonical column names and their possible aliases
 COLUMN_ALIASES = {
-    "patient_id": ["patient_id", "PatientID", "patientID", "PatientId"],
-    "ecg_wave": ["ecgWave", "ValueStr", "ECG", "Ecgwave"],
-    "heart_rate": ["Heartrate", "Value", "HeartRate", "HR"],
-    "label": ["Label", "label", "Diagnosis", "Class"],
+    "patient_id": ["patient_id", "Patient ID", "patient id", "PatientID", "patientID", "PatientId"],
+    "ecg_wave": ["ecg_wave", "ECG Wave", "ecg wave", "ecgWave", "ValueStr", "ECG", "Ecgwave"],
+    "heart_rate": ["heart_rate", "Heart Rate", "heart rate", "Heartrate", "Value", "HeartRate", "HR"],
+    "label": ["label", "Label", "Diagnosis", "Class"],
 }
+REQUIRED_UPLOAD_COLUMNS = {"patient_id", "ecg_wave", "heart_rate", "label"}
+
+
+def normalize_column_key(value):
+    normalized = str(value).replace("\ufeff", "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized
+
+
+def load_tabular_file(uploaded_file):
+    file_name = uploaded_file.name.lower()
+    uploaded_file.seek(0)
+    if file_name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if file_name.endswith((".xls", ".xlsx")):
+        return pd.read_excel(uploaded_file)
+    raise ValueError("Invalid file format, expected CSV or Excel file.")
+
+
+def build_unique_file_name(file_name):
+    base_name, extension = ospath.splitext(str(file_name))
+    candidate = f"{base_name}{extension}"
+    counter = 2
+
+    while ECGFile.objects.filter(file_name=candidate).exists():
+        candidate = f"{base_name}_{counter}{extension}"
+        counter += 1
+
+    return candidate
+
+
+def build_upload_mapping_response(df, missing_columns):
+    available_columns = [str(col) for col in df.columns]
+    suggested_mapping = {}
+    normalized_available = {normalize_column_key(col): str(col) for col in df.columns}
+
+    for canonical_col, aliases in COLUMN_ALIASES.items():
+        for alias in aliases:
+            matched = normalized_available.get(normalize_column_key(alias))
+            if matched:
+                suggested_mapping[canonical_col] = matched
+                break
+
+    preview_rows = (
+        df.head(5)
+        .fillna("")
+        .astype(str)
+        .to_dict(orient="records")
+    )
+
+    return {
+        "error": f"Missing required columns after normalization: {missing_columns}",
+        "missing_required_columns": sorted(missing_columns),
+        "available_columns": available_columns,
+        "suggested_mapping": suggested_mapping,
+        "preview_rows": preview_rows,
+    }
+
+
+def extract_column_mapping(request_data):
+    raw_mapping = request_data.get("column_mapping")
+    if raw_mapping:
+        try:
+            return json.loads(raw_mapping) if isinstance(raw_mapping, str) else raw_mapping
+        except json.JSONDecodeError:
+            raise ValueError("Invalid column_mapping payload.")
+
+    fallback_mapping = {}
+    for canonical_col in REQUIRED_UPLOAD_COLUMNS:
+        mapped_value = request_data.get(f"column_mapping_{canonical_col}")
+        if mapped_value:
+            fallback_mapping[canonical_col] = mapped_value
+
+    return fallback_mapping or None
+
+
+def apply_column_mapping(df, column_mapping):
+    if not column_mapping:
+        return df
+
+    rename_map = {}
+    used_sources = set()
+    normalized_columns = {normalize_column_key(col): col for col in df.columns}
+    for canonical_col, source_col in column_mapping.items():
+        if canonical_col not in COLUMN_ALIASES:
+            continue
+        if not source_col:
+            continue
+        requested_source = str(source_col)
+        source_col = normalized_columns.get(normalize_column_key(requested_source), requested_source)
+        if source_col not in df.columns:
+            raise ValueError(f'Mapped source column "{source_col}" was not found in the file.')
+        if source_col in used_sources:
+            raise ValueError(f'Column "{source_col}" was mapped more than once.')
+        rename_map[source_col] = canonical_col
+        used_sources.add(source_col)
+
+    return df.rename(columns=rename_map)
+
+
+def resolve_uploaded_label(raw_value, labels_by_value):
+    if pd.isna(raw_value) or str(raw_value).strip() == "":
+        return None
+
+    try:
+        normalized_value = int(float(raw_value))
+    except (TypeError, ValueError):
+        raise ValueError(f'Invalid label value "{raw_value}". Expected a numeric label such as 0, 1, or 2.')
+
+    label_obj = labels_by_value.get(normalized_value)
+    if not label_obj:
+        known_values = ", ".join(str(value) for value in sorted(labels_by_value.keys()))
+        raise ValueError(
+            f'Label value "{normalized_value}" does not exist in ECG labels. '
+            f'Available label values: {known_values}.'
+        )
+
+    return label_obj
 
 
 def normalize_columns(df):
@@ -48,17 +188,186 @@ def normalize_columns(df):
     Rename columns in DataFrame to canonical column names if a match for any aliases is found.
     """
     new_columns = {}
+    normalized_columns = {normalize_column_key(col): col for col in df.columns}
+
     for canonical_col, aliases in COLUMN_ALIASES.items():
+        if canonical_col in df.columns:
+            continue
         for alias in aliases:
-            if alias in df.columns:
-                new_columns[alias] = canonical_col
+            matched_column = normalized_columns.get(normalize_column_key(alias))
+            if matched_column:
+                new_columns[matched_column] = canonical_col
                 break
     df = df.rename(columns=new_columns)
     return df
 
 
+def get_or_create_profile(user):
+    if not user or not user.is_authenticated:
+        return None
+    profile, _ = Profile.objects.get_or_create(user=user)
+    return profile
+
+
+def get_effective_role(user):
+    if not user or not user.is_authenticated:
+        return Profile.ROLE_DOCTOR
+    if user.is_superuser or user.is_staff:
+        return Profile.ROLE_ADMIN
+    profile = get_or_create_profile(user)
+    return profile.effective_role if profile else Profile.ROLE_DOCTOR
+
+
+def scope_records_for_user(user, queryset=None):
+    queryset = queryset if queryset is not None else ECGRecord.objects.all()
+    role = get_effective_role(user)
+    if role in {Profile.ROLE_ADMIN, Profile.ROLE_DOCTOR}:
+        return queryset
+
+    profile = get_or_create_profile(user)
+    patient_id = getattr(profile, "patient_id", None)
+    if role == Profile.ROLE_PATIENT and patient_id:
+        return queryset.filter(patient_id=str(patient_id))
+    return queryset.none()
+
+
+def can_access_record(user, record):
+    return scope_records_for_user(user, ECGRecord.objects.filter(id=record.id)).exists()
+
+
+def resolve_model_path(model_info):
+    from django.conf import settings
+
+    return str(Path(settings.BASE_DIR) / model_info["path"])
+
+
+SKLEARN_WRAPPERS = (ECGXGBoostWrapper, AdaBoostECGWrapper, RandomForestECGWrapper)
+
+
+def ensure_builtin_models():
+    for key, info in MODEL_MAP.items():
+        DeployedModel.objects.update_or_create(
+            key=key,
+            defaults={
+                "label": info.get("label", key),
+                "base_model_key": key,
+                "source_type": DeployedModel.SOURCE_BUILTIN,
+                "weights_path": info["path"],
+                "input_size": info["input_size"],
+                "num_classes": info["num_classes"],
+                "trainable": info["class"] not in SKLEARN_WRAPPERS,
+                "is_active": True,
+            },
+        )
+
+
+def deployed_model_to_runtime_info(model_obj):
+    base_info = MODEL_MAP.get(model_obj.base_model_key)
+    if not base_info:
+        raise KeyError(f'Base model "{model_obj.base_model_key}" is not registered in MODEL_MAP.')
+
+    runtime_info = dict(base_info)
+    runtime_info.update({
+        "key": model_obj.key,
+        "label": model_obj.label,
+        "path": model_obj.weights_path,
+        "input_size": model_obj.input_size,
+        "num_classes": model_obj.num_classes,
+        "trainable": model_obj.trainable,
+        "source_type": model_obj.source_type,
+        "base_model_key": model_obj.base_model_key,
+        "db_id": model_obj.id,
+    })
+    return runtime_info
+
+
+def get_active_deployed_models():
+    ensure_builtin_models()
+    return DeployedModel.objects.filter(is_active=True).order_by("label", "key")
+
+
+def get_model_runtime_catalog():
+    catalog = {}
+    for model_obj in get_active_deployed_models():
+        catalog[model_obj.key] = deployed_model_to_runtime_info(model_obj)
+    return catalog
+
+
+def get_model_runtime_info(model_key):
+    return get_model_runtime_catalog().get(model_key)
+
+
+def get_patient_assignment(patient_id):
+    if not patient_id:
+        return None
+    ensure_builtin_models()
+    return (
+        PatientModelAssignment.objects
+        .select_related("model")
+        .filter(patient_id=str(patient_id), model__is_active=True)
+        .first()
+    )
+
+
+def get_visible_model_runtime_catalog_for_user(user):
+    catalog = get_model_runtime_catalog()
+    role = get_effective_role(user)
+    if role != Profile.ROLE_PATIENT:
+        return catalog
+
+    profile = get_or_create_profile(user)
+    assignment = get_patient_assignment(getattr(profile, "patient_id", None))
+    if not assignment:
+        return {}
+
+    assigned_info = catalog.get(assignment.model.key)
+    return {assignment.model.key: assigned_info} if assigned_info else {}
+
+
+def load_inference_model(model_name):
+    if model_name in loaded_models:
+        return loaded_models[model_name], None
+
+    model_info = get_model_runtime_info(model_name)
+    if not model_info:
+        return None, f'Model "{model_name}" not found.'
+
+    model_path = resolve_model_path(model_info)
+    if not os.path.exists(model_path):
+        return None, f'Weights for "{model_name}" not found at {model_path}.'
+
+    model_class = model_info["class"]
+    extra_kwargs = model_info.get("kwargs", {})
+
+    try:
+        if model_class in SKLEARN_WRAPPERS:
+            model = model_class(model_path=model_path, **extra_kwargs)
+        else:
+            model = model_class(model_info["num_classes"], **extra_kwargs)
+            model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+        if hasattr(model, "eval"):
+            model.eval()
+        loaded_models[model_name] = model
+        return model, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def as_probabilities(output_tensor):
+    tensor = output_tensor.detach().cpu()
+    if tensor.ndim == 1:
+        tensor = tensor.unsqueeze(0)
+
+    row_sums = tensor.sum(dim=1)
+    if torch.all(tensor >= 0) and torch.all(tensor <= 1) and torch.allclose(
+        row_sums, torch.ones_like(row_sums), atol=1e-3
+    ):
+        return tensor
+    return torch.softmax(tensor, dim=1)
+
+
 class FileUploadView(APIView):
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     def post(self, request, format=None):
         file = request.FILES.get("file")
@@ -66,36 +375,37 @@ class FileUploadView(APIView):
             return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            ecg_file = ECGFile.objects.create(file_name=file.name, status="processing")
-        except IntegrityError:
-            return Response({"error": "A file with this name already exists."}, status=400)
+            df = load_tabular_file(file)
 
-        try:
-            if file.name.endswith(".csv"):
-                df = pd.read_csv(file)
-            elif file.name.endswith((".xls", ".xlsx")):
-                df = pd.read_excel(file)
-            else:
-                return Response({"error": "Invalid file format, expected CSV or Excel file."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                column_mapping = extract_column_mapping(request.data)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=400)
 
-            # Normalize columns to canonical form
+            df = apply_column_mapping(df, column_mapping)
             df = normalize_columns(df)
 
-            required_cols = {"patient_id", "ecg_wave", "heart_rate", "label"}
-            if not required_cols.issubset(df.columns):
-                missing = required_cols - set(df.columns)
-                return Response({"error": f"Missing required columns after normalization: {missing}"}, status=400)
+            if not REQUIRED_UPLOAD_COLUMNS.issubset(df.columns):
+                missing = REQUIRED_UPLOAD_COLUMNS - set(df.columns)
+                return Response(build_upload_mapping_response(df, missing), status=400)
 
-            records = [
-                ECGRecord(
-                    file=ecg_file,
-                    patient_id=row["patient_id"],
-                    ecg_wave=row["ecg_wave"],  # expected format string/list
-                    heart_rate=row["heart_rate"],
-                    label=int(row["label"]) if not pd.isna(row["label"]) else None,
+            labels_by_value = {lbl.value: lbl for lbl in ECGLabel.objects.all()}
+
+            stored_file_name = build_unique_file_name(file.name)
+            ecg_file = ECGFile.objects.create(file_name=stored_file_name, status="processing")
+
+            records = []
+            for _, row in df.iterrows():
+                label_obj = resolve_uploaded_label(row["label"], labels_by_value)
+                records.append(
+                    ECGRecord(
+                        file=ecg_file,
+                        patient_id=str(row["patient_id"]),
+                        ecg_wave=row["ecg_wave"],  # expected format string/list
+                        heart_rate=float(row["heart_rate"]),
+                        label_id=label_obj.id if label_obj else None,
+                    )
                 )
-                for _, row in df.iterrows()
-            ]
 
             with transaction.atomic():
                 ECGRecord.objects.bulk_create(records, batch_size=5000)
@@ -107,8 +417,9 @@ class FileUploadView(APIView):
             return Response(ECGFileSerializer(ecg_file).data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            ecg_file.status = "failed"
-            ecg_file.save()
+            if 'ecg_file' in locals():
+                ecg_file.status = "failed"
+                ecg_file.save()
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # ---------------------------
@@ -142,6 +453,7 @@ class ECGRecordListView(generics.ListAPIView):
     serializer_class = ECGRecordSerializer
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = ECGRecordFilter
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """
@@ -150,7 +462,7 @@ class ECGRecordListView(generics.ListAPIView):
         - defer ecg_wave: 2604 floats per row are skipped unless explicitly needed
         """
         return (
-            ECGRecord.objects
+            scope_records_for_user(self.request.user, ECGRecord.objects)
             .select_related('label', 'ai_label')
             .defer('ecg_wave')           # heavy column, loaded only on demand
             .order_by('id')
@@ -205,21 +517,26 @@ class ECGRecordListView(generics.ListAPIView):
 
 
 class ECGRecordDetailView(generics.RetrieveAPIView):
-    queryset = ECGRecord.objects.all()
     serializer_class = ECGRecordDetailSerializer
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return scope_records_for_user(
+            self.request.user,
+            ECGRecord.objects.select_related('label', 'ai_label')
+        )
 
 
 # ---------------------------
 # Fetch ECG Wave (per record, uses cache)
 # ---------------------------
 @api_view(["GET"])
-# @permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def get_ecg_wave_view(request, record_id):
     patient_id = request.query_params.get("patient_id")
 
     try:
-        record = ECGRecord.objects.get(id=record_id)
+        record = scope_records_for_user(request.user, ECGRecord.objects).get(id=record_id)
     except ECGRecord.DoesNotExist:
         return Response({"error": "Record not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -267,6 +584,7 @@ def get_ecg_wave_view(request, record_id):
 # Bulk Label Update  (human annotation)
 # ---------------------------
 @api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDoctorOrAdmin])
 def bulk_label_update_view(request):
     """
     Bulk update HUMAN labels for multiple ECG records.
@@ -293,7 +611,10 @@ def bulk_label_update_view(request):
                 continue
 
             try:
-                ecg_record = ECGRecord.objects.get(id=record_id, patient_id=patient_id)
+                ecg_record = scope_records_for_user(
+                    request.user,
+                    ECGRecord.objects
+                ).get(id=record_id, patient_id=patient_id)
             except ECGRecord.DoesNotExist:
                 errors.append(f"Record {record_id} / patient {patient_id} not found")
                 continue
@@ -321,9 +642,23 @@ def bulk_label_update_view(request):
 # ECGFile ViewSet
 # ---------------------------
 class ECGFileViewSet(viewsets.ModelViewSet):
-    queryset = ECGFile.objects.all().order_by('-uploaded_at')
     serializer_class = ECGFileSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        role = get_effective_role(self.request.user)
+        queryset = ECGFile.objects.all().order_by('-uploaded_at')
+        if role == Profile.ROLE_PATIENT:
+            visible_file_ids = scope_records_for_user(self.request.user, ECGRecord.objects).values_list('file_id', flat=True).distinct()
+            queryset = queryset.filter(id__in=visible_file_ids)
+        return queryset
+
+    def get_permissions(self):
+        if self.action in {'create', 'destroy', 'update', 'partial_update'}:
+            permission_classes = [IsAuthenticated, IsAdminRole]
+        else:
+            permission_classes = [IsAuthenticated]
+        return [permission() for permission in permission_classes]
 
     @action(detail=True, methods=['get'])
     def records(self, request, pk=None):
@@ -332,7 +667,7 @@ class ECGFileViewSet(viewsets.ModelViewSet):
         except ECGFile.DoesNotExist:
             return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        records = ECGRecord.objects.filter(file=ecg_file)
+        records = scope_records_for_user(request.user, ECGRecord.objects.filter(file=ecg_file))
         serializer = ECGRecordSerializer(records, many=True)
         return Response(serializer.data)
 
@@ -343,15 +678,15 @@ class ECGFileViewSet(viewsets.ModelViewSet):
         except ECGFile.DoesNotExist:
             return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        records = ECGRecord.objects.filter(file=ecg_file)
+        records = scope_records_for_user(request.user, ECGRecord.objects.filter(file=ecg_file))
         serializer = ECGRecordDetailSerializer(records, many=True)
         return Response(serializer.data)
 
     @action(detail=True, methods=['get'], url_path='download_records/csv',
-            permission_classes=[AllowAny], authentication_classes=[])
+            permission_classes=[IsAuthenticated], authentication_classes=[])
     def download_records_csv(self, request, pk=None):
         ecg_file = self.get_object()
-        records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
+        records_qs = scope_records_for_user(request.user, ECGRecord.objects.filter(file=ecg_file)).order_by('created_at')
 
         data = [{
             'ID': idx + 1,
@@ -368,10 +703,10 @@ class ECGFileViewSet(viewsets.ModelViewSet):
         return response
 
     @action(detail=True, methods=['get'], url_path='download_records/xlsx',
-            permission_classes=[AllowAny], authentication_classes=[])
+            permission_classes=[IsAuthenticated], authentication_classes=[])
     def download_records_xlsx(self, request, pk=None):
         ecg_file = self.get_object()
-        records_qs = ECGRecord.objects.filter(file=ecg_file).order_by('created_at')
+        records_qs = scope_records_for_user(request.user, ECGRecord.objects.filter(file=ecg_file)).order_by('created_at')
 
         data = [{
             'ID': idx + 1,
@@ -400,10 +735,10 @@ class ECGFileViewSet(viewsets.ModelViewSet):
 # Additional APIViews for Summaries and Counts
 # ---------------------------
 class ECGFileListView(APIView):
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        files = ECGFile.objects.all().annotate(total_records=Count('records'))
+        files = self._get_files_for_user(request.user)
         file_list = [
             {
                 'file_name': f.file_name,
@@ -415,16 +750,23 @@ class ECGFileListView(APIView):
         ]
         return Response(file_list)
 
+    def _get_files_for_user(self, user):
+        role = get_effective_role(user)
+        queryset = ECGFile.objects.all()
+        if role == Profile.ROLE_PATIENT:
+            visible_file_ids = scope_records_for_user(user, ECGRecord.objects).values_list('file_id', flat=True).distinct()
+            queryset = queryset.filter(id__in=visible_file_ids)
+        return queryset.annotate(total_records=Count('records'))
+
 class LabelsPatientsByFilesView(APIView):
-    # permission_classes = [IsAuthenticated]
-    # parser_classes = [JSONParser]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         file_names = request.data.get('files', [])
         if not file_names:
             return Response({"error": "No files specified."}, status=status.HTTP_400_BAD_REQUEST)
 
-        records = ECGRecord.objects.filter(file__file_name__in=file_names) \
+        records = scope_records_for_user(request.user, ECGRecord.objects).filter(file__file_name__in=file_names) \
             .exclude(label__name='No Label') \
             .exclude(label__isnull=True)
 
@@ -463,6 +805,8 @@ class ECGCustomExportView(APIView):
       'ai_only'      - records that only have an ai_label, no human label
     """
 
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         files = request.data.get('files', [])
         patients = request.data.get('patients', [])
@@ -477,7 +821,10 @@ class ECGCustomExportView(APIView):
         label_ids = [l['id'] for l in labels if l.get('numRecords', 0) > 0]
         file_names = [f['file_name'] for f in files if f.get('numRecords', 0) > 0]
 
-        queryset = ECGRecord.objects.filter(file__file_name__in=file_names).select_related('label', 'ai_label')
+        queryset = scope_records_for_user(
+            request.user,
+            ECGRecord.objects.filter(file__file_name__in=file_names).select_related('label', 'ai_label')
+        )
 
         # Apply verification filter
         if verification_filter == 'verified':
@@ -487,7 +834,7 @@ class ECGCustomExportView(APIView):
         elif verification_filter == 'ai_only':
             queryset = queryset.filter(label__isnull=True, ai_label__isnull=False)
         else:  # 'all' — any that has at least one label
-            queryset = queryset.filter(models.Q(label__isnull=False) | models.Q(ai_label__isnull=False))
+            queryset = queryset.filter(Q(label__isnull=False) | Q(ai_label__isnull=False))
 
         if patient_ids:
             queryset = queryset.filter(patient_id__in=patient_ids)
@@ -556,22 +903,56 @@ class ECGCustomExportView(APIView):
 
 
 class LabelCountView(APIView):
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        labels = ECGLabel.objects.all().values('id', 'name')
-        return Response(list(labels))
+        patient_id = request.query_params.get("patient_id")
+        source = request.query_params.get("source", "human").lower()
+
+        if source == "ai":
+            records = scope_records_for_user(
+                request.user,
+                ECGRecord.objects.exclude(ai_label__isnull=True).select_related("ai_label"),
+            )
+            if patient_id:
+                records = records.filter(patient_id=str(patient_id))
+            labels = list(
+                records.values("ai_label_id", "ai_label__name")
+                .annotate(count=Count("id"))
+                .order_by("ai_label__name")
+            )
+            return Response([
+                {"id": item["ai_label_id"], "name": item["ai_label__name"], "count": item["count"]}
+                for item in labels
+            ])
+
+        records = scope_records_for_user(
+            request.user,
+            ECGRecord.objects.exclude(label__isnull=True).select_related("label"),
+        )
+        if patient_id:
+            records = records.filter(patient_id=str(patient_id))
+        labels = list(
+            records.values("label_id", "label__name")
+            .annotate(count=Count("id"))
+            .order_by("label__name")
+        )
+        return Response([
+            {"id": item["label_id"], "name": item["label__name"], "count": item["count"]}
+            for item in labels
+        ])
 
 
 class PatientCountView(APIView):
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        patients = ECGRecord.objects.values('patient_id').annotate(record_count=Count('id')).order_by('patient_id')
+        patients = scope_records_for_user(request.user, ECGRecord.objects).values('patient_id').annotate(record_count=Count('id')).order_by('patient_id')
         response = [{'patient_id': p['patient_id'], 'record_count': p['record_count']} for p in patients]
         return Response(response)
 
 class ECGFileSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
@@ -580,21 +961,26 @@ class ECGFileSummaryView(APIView):
             file_summaries = []
             for f in files_qs:
                 # Get unique patients for this file
-                unique_patients = ECGRecord.objects.filter(file=f).values("patient_id").distinct().count()
+                file_records = scope_records_for_user(request.user, ECGRecord.objects.filter(file=f))
+                unique_patients = file_records.values("patient_id").distinct().count()
 
                 # Get label counts for this file (ignore "No Label")
                 label_counts = (
-                    ECGRecord.objects.filter(file=f)
+                    file_records
                     .exclude(label__name="No Label")
                     .values("label_id", "label__name")
                     .annotate(count=Count("id"))
                 )
 
+                visible_records = file_records.count()
+                if visible_records == 0 and get_effective_role(request.user) == Profile.ROLE_PATIENT:
+                    continue
+
                 file_summaries.append({
                     "file_name": f.file_name,
                     "uploaded_at": f.uploaded_at,
                     "status": f.status,
-                    "total_records": f.record_count,
+                    "total_records": visible_records,
                     "label_counts": list(label_counts),
                     "unique_patient_count": unique_patients,
                 })
@@ -605,32 +991,29 @@ class ECGFileSummaryView(APIView):
 
 
 class DashboardSummaryView(APIView):
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
-            total_files = ECGFile.objects.count()
-            total_records = ECGRecord.objects.count()
+            scoped_records = scope_records_for_user(request.user, ECGRecord.objects)
+            total_files = ECGFile.objects.count() if get_effective_role(request.user) != Profile.ROLE_PATIENT else scoped_records.values('file_id').distinct().count()
+            total_records = scoped_records.count()
             
             # Count records with human labels
-            labelled_records = ECGRecord.objects.exclude(label=None).count()
+            labelled_records = scoped_records.exclude(label=None).count()
             # Count records with AI labels
-            ai_labelled_records = ECGRecord.objects.exclude(ai_label=None).count()
+            ai_labelled_records = scoped_records.exclude(ai_label=None).count()
             
             # Verified count
-            verified_records = ECGRecord.objects.filter(is_verified=True).count()
+            verified_records = scoped_records.filter(is_verified=True).count()
 
             # Label distributions (Human)
-            labels_data_qs = ECGLabel.objects.annotate(
-                count=Count('records')
-            ).values('name', 'count')
-            labels_data = {item['name']: item['count'] for item in labels_data_qs}
+            labels_data_qs = scoped_records.exclude(label__isnull=True).values('label__name').annotate(count=Count('id'))
+            labels_data = {item['label__name']: item['count'] for item in labels_data_qs}
             
             # Label distributions (AI)
-            ai_labels_data_qs = ECGLabel.objects.annotate(
-                count=Count('ai_records')
-            ).values('name', 'count')
-            ai_labels_data = {item['name']: item['count'] for item in ai_labels_data_qs}
+            ai_labels_data_qs = scoped_records.exclude(ai_label__isnull=True).values('ai_label__name').annotate(count=Count('id'))
+            ai_labels_data = {item['ai_label__name']: item['count'] for item in ai_labels_data_qs}
 
             # Compatibility field
             normal_records = labels_data.get("Normal", 0)
@@ -651,14 +1034,15 @@ class DashboardSummaryView(APIView):
 
 
 class AuthorizeUserView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     def post(self, request):
         username = request.data.get('username')
         try:
             user = User.objects.get(username=username)
-            user.profile.is_authorized = True
-            user.profile.save()
+            profile = get_or_create_profile(user)
+            profile.is_authorized = True
+            profile.save()
             return Response({"authorized": True})
         except User.DoesNotExist:
             return Response({"error": "User does not exist"}, status=status.HTTP_404_NOT_FOUND)
@@ -666,63 +1050,92 @@ class AuthorizeUserView(APIView):
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]  # Anyone can register
+
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({'msg': 'User registered successfully!'}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            serializer = RegisterSerializer(data=request.data)
+            if serializer.is_valid():
+                user = serializer.save()
+                return Response({
+                    'msg': 'User registered successfully!',
+                    'user': UserSerializer(user).data,
+                }, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except OperationalError:
+            return Response({
+                'error': 'Database write failed. Your local SQLite database is unavailable or corrupted.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as exc:
+            return Response({
+                'error': f'Registration failed: {exc}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class LoginView(APIView):
     permission_classes = [AllowAny]  # Anyone can login
+
     def post(self, request):
         username = request.data.get('username')
         password = request.data.get('password')
         user = authenticate(username=username, password=password)
         if user is not None:
+            profile = get_or_create_profile(user)
             refresh = RefreshToken.for_user(user)
             return Response({
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
+                'user': UserSerializer(user).data,
+                'role': profile.effective_role,
+                'patient_id': profile.patient_id,
             })
         return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
 
 
+class CurrentUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        get_or_create_profile(user)
+        return Response(UserSerializer(user).data, status=status.HTTP_200_OK)
+
+
+class UserSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = get_or_create_profile(request.user)
+        return Response(ProfileSerializer(profile).data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        profile = get_or_create_profile(request.user)
+        serializer = ProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 loaded_models = {}
 class PredictECGView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         data = request.data
         model_name = data.get('model_name')
         input_data = data.get('input')
+        visible_catalog = get_visible_model_runtime_catalog_for_user(request.user)
 
-        if model_name not in MODEL_MAP:
+        if model_name not in visible_catalog:
             return Response({'error': f'Model "{model_name}" not found.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        model_info = MODEL_MAP[model_name]
+        model_info = visible_catalog[model_name]
         expected_size = model_info['input_size']
 
         if input_data is None or len(input_data) != expected_size:
             return Response({'error': f'Input must be a list of {expected_size} floats.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Load model if not already cached
-        if model_name not in loaded_models:
-            model_class = model_info['class']
-            num_classes = model_info['num_classes']
-            model_path = model_info['path']
-            extra_kwargs = model_info.get('kwargs', {})
-
-            if not os.path.exists(model_path):
-                return Response(
-                    {'error': f'Model weights not found at {model_path}. Please train or download the model first.'},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE
-                )
-
-            model = model_class(num_classes, **extra_kwargs)
-            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-            model.eval()
-            loaded_models[model_name] = model
-        else:
-            model = loaded_models[model_name]
+        model, err = load_inference_model(model_name)
+        if err:
+            return Response({'error': err}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         # Preprocess input — CNN models expect (batch, 1, L), LSTM expects (batch, L)
         input_tensor = torch.tensor(input_data, dtype=torch.float32).unsqueeze(0)  # (1, 2604)
@@ -731,9 +1144,10 @@ class PredictECGView(APIView):
             input_tensor = input_tensor.unsqueeze(0)  # (1, 1, 2604)
 
         with torch.no_grad():
-            logits = model(input_tensor)
-            pred_class = torch.argmax(logits, dim=1).item()
-            probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()[0]
+            output = model(input_tensor)
+            probs_tensor = as_probabilities(output)
+            pred_class = torch.argmax(probs_tensor, dim=1).item()
+            probs = probs_tensor.numpy().tolist()[0]
 
         # Fetch the friendly class name from the ECGLabel table
         try:
@@ -749,19 +1163,133 @@ class PredictECGView(APIView):
         })
 
 class ModelListView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        from django.conf import settings
-        BASE_DIR = settings.BASE_DIR
+        visible_catalog = get_visible_model_runtime_catalog_for_user(request.user)
+        assignment = None
+        if get_effective_role(request.user) == Profile.ROLE_PATIENT:
+            profile = get_or_create_profile(request.user)
+            assignment = get_patient_assignment(getattr(profile, "patient_id", None))
+
         models_info = {
             name: {
                 "input_size": info["input_size"],
                 "num_classes": info["num_classes"],
                 "label": info.get("label", name),
-                "available": os.path.exists(str(BASE_DIR / info["path"])),
+                "available": os.path.exists(resolve_model_path(info)),
+                "trainable": info.get("trainable", info["class"] not in SKLEARN_WRAPPERS),
+                "source_type": info.get("source_type", DeployedModel.SOURCE_BUILTIN),
+                "base_model_key": info.get("base_model_key", name),
             }
-            for name, info in MODEL_MAP.items()
+            for name, info in visible_catalog.items()
         }
-        return Response(models_info, status=status.HTTP_200_OK)
+        return Response({
+            "models": models_info,
+            "patient_assignment": (
+                {
+                    "patient_id": assignment.patient_id,
+                    "model_key": assignment.model.key,
+                    "model_label": assignment.model.label,
+                }
+                if assignment else None
+            ),
+        }, status=status.HTTP_200_OK)
+
+
+class DeployedModelRegistryView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        ensure_builtin_models()
+        models_qs = DeployedModel.objects.filter(is_active=True).order_by("label", "key")
+        assignments_qs = PatientModelAssignment.objects.select_related("model").order_by("patient_id")
+        return Response({
+            "models": DeployedModelSerializer(models_qs, many=True).data,
+            "assignments": PatientModelAssignmentSerializer(assignments_qs, many=True).data,
+        })
+
+    def post(self, request):
+        ensure_builtin_models()
+        uploaded_file = request.FILES.get("file")
+        label = str(request.data.get("label", "")).strip()
+        base_model_key = str(request.data.get("base_model_key", "")).strip()
+        key = str(request.data.get("key", "")).strip()
+        input_size = request.data.get("input_size")
+        num_classes = request.data.get("num_classes")
+
+        if not uploaded_file:
+            return Response({"error": "Model file is required."}, status=400)
+        if not label:
+            return Response({"error": "label is required."}, status=400)
+        if base_model_key not in MODEL_MAP:
+            return Response({"error": f'base_model_key must be one of: {list(MODEL_MAP.keys())}'}, status=400)
+
+        try:
+            input_size = int(input_size or MODEL_MAP[base_model_key]["input_size"])
+            num_classes = int(num_classes or MODEL_MAP[base_model_key]["num_classes"])
+        except (TypeError, ValueError):
+            return Response({"error": "input_size and num_classes must be integers."}, status=400)
+
+        ext = ospath.splitext(uploaded_file.name)[1].lower()
+        expected_ext = ".pkl" if MODEL_MAP[base_model_key]["class"] in SKLEARN_WRAPPERS else ".pth"
+        if ext != expected_ext:
+            return Response({"error": f'Expected a {expected_ext} file for {base_model_key}.'}, status=400)
+
+        safe_key = re.sub(r"[^a-zA-Z0-9_]+", "_", key or label).strip("_") or uuid.uuid4().hex[:10]
+        relative_path = f"{UPLOADED_MODELS_FOLDER}/{safe_key}_{uuid.uuid4().hex[:8]}{ext}"
+        absolute_path = Path(resolve_model_path({"path": relative_path}))
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with absolute_path.open("wb") as destination:
+            for chunk in uploaded_file.chunks():
+                destination.write(chunk)
+
+        model_obj = DeployedModel.objects.create(
+            key=safe_key,
+            label=label,
+            base_model_key=base_model_key,
+            source_type=DeployedModel.SOURCE_UPLOADED,
+            weights_path=relative_path,
+            input_size=input_size,
+            num_classes=num_classes,
+            trainable=MODEL_MAP[base_model_key]["class"] not in SKLEARN_WRAPPERS,
+            is_active=True,
+        )
+        loaded_models.pop(model_obj.key, None)
+
+        return Response(DeployedModelSerializer(model_obj).data, status=201)
+
+
+class PatientModelAssignmentView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    def post(self, request):
+        ensure_builtin_models()
+        patient_id = str(request.data.get("patient_id", "")).strip()
+        model_key = str(request.data.get("model_key", "")).strip()
+        if not patient_id or not model_key:
+            return Response({"error": "patient_id and model_key are required."}, status=400)
+
+        try:
+            model_obj = DeployedModel.objects.get(key=model_key, is_active=True)
+        except DeployedModel.DoesNotExist:
+            return Response({"error": f'Model "{model_key}" not found.'}, status=404)
+
+        assignment, _ = PatientModelAssignment.objects.update_or_create(
+            patient_id=patient_id,
+            defaults={"model": model_obj},
+        )
+        return Response(PatientModelAssignmentSerializer(assignment).data, status=200)
+
+    def delete(self, request):
+        patient_id = str(request.data.get("patient_id", "")).strip()
+        if not patient_id:
+            return Response({"error": "patient_id is required."}, status=400)
+        deleted, _ = PatientModelAssignment.objects.filter(patient_id=patient_id).delete()
+        if not deleted:
+            return Response({"error": "Assignment not found."}, status=404)
+        return Response(status=204)
 
 
 # ---------------------------
@@ -776,21 +1304,10 @@ class AutoLabelView(APIView):
     Returns counts of labeled/skipped/errors.
     """
 
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
     def _load_model(self, model_name):
-        if model_name in loaded_models:
-            return loaded_models[model_name], None
-        model_info = MODEL_MAP.get(model_name)
-        if not model_info:
-            return None, f'Model "{model_name}" not found.'
-        if not os.path.exists(model_info['path']):
-            return None, f'Weights for "{model_name}" not found at {model_info["path"]}. Train or download first.'
-        model_class = model_info['class']
-        extra_kwargs = model_info.get('kwargs', {})
-        model = model_class(model_info['num_classes'], **extra_kwargs)
-        model.load_state_dict(torch.load(model_info['path'], map_location='cpu'))
-        model.eval()
-        loaded_models[model_name] = model
-        return model, None
+        return load_inference_model(model_name)
 
     def post(self, request):
         file_name = request.data.get('file_name')
@@ -809,7 +1326,9 @@ class AutoLabelView(APIView):
         if err:
             return Response({'error': err}, status=503)
 
-        model_info = MODEL_MAP[model_name]
+        model_info = get_model_runtime_info(model_name)
+        if not model_info:
+            return Response({'error': f'Model "{model_name}" not found.'}, status=400)
         model_type = model_info['class'].__name__
 
         # Only filter on ai_label — never touch human label
@@ -838,9 +1357,10 @@ class AutoLabelView(APIView):
                     if model_type in ('ECG1DCNN', 'ECGCNNLSTMHybrid', 'ECGResNet1D'):
                         t = t.unsqueeze(0)
 
-                    logits = model(t)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()[0]
-                    pred_class = torch.argmax(logits, dim=1).item()
+                    output = model(t)
+                    probs_tensor = as_probabilities(output)
+                    probs = probs_tensor.numpy().tolist()[0]
+                    pred_class = torch.argmax(probs_tensor, dim=1).item()
                     label_obj = all_labels.get(pred_class)
                     if label_obj:
                         # Write to ai_label ONLY — human label stays safe
@@ -857,7 +1377,7 @@ class AutoLabelView(APIView):
                     error_count += 1
 
         if to_update:
-            ECGRecord.objects.bulk_update(to_update, ['ai_label', 'ai_model_name'])
+            ECGRecord.objects.bulk_update(to_update, ['ai_label', 'ai_model_name', 'ai_confidence', 'ai_probabilities'])
 
         return Response({
             'file': file_name,
@@ -877,12 +1397,18 @@ class ModelCompareView(APIView):
     Returns predictions from all requested models for side-by-side comparison.
     """
 
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         record_id = request.data.get('record_id')
-        model_names = request.data.get('models', list(MODEL_MAP.keys()))
+        visible_catalog = get_visible_model_runtime_catalog_for_user(request.user)
+        model_names = request.data.get('models', list(visible_catalog.keys()))
 
         try:
-            record = ECGRecord.objects.select_related('label', 'ai_label').get(id=record_id)
+            record = scope_records_for_user(
+                request.user,
+                ECGRecord.objects.select_related('label', 'ai_label')
+            ).get(id=record_id)
         except ECGRecord.DoesNotExist:
             return Response({'error': 'Record not found.'}, status=404)
 
@@ -894,22 +1420,18 @@ class ModelCompareView(APIView):
         results = {}
 
         for model_name in model_names:
-            model_info = MODEL_MAP.get(model_name)
+            model_info = visible_catalog.get(model_name)
             if not model_info:
-                results[model_name] = {'error': 'Not in MODEL_MAP'}
+                results[model_name] = {'error': 'Model is not available for this user'}
                 continue
-            if not os.path.exists(model_info['path']):
+            if not os.path.exists(resolve_model_path(model_info)):
                 results[model_name] = {'error': 'Weights not found — train the model first'}
                 continue
             try:
-                if model_name not in loaded_models:
-                    mc = model_info['class']
-                    kw = model_info.get('kwargs', {})
-                    m = mc(model_info['num_classes'], **kw)
-                    m.load_state_dict(torch.load(model_info['path'], map_location='cpu'))
-                    m.eval()
-                    loaded_models[model_name] = m
-                model = loaded_models[model_name]
+                model, err = load_inference_model(model_name)
+                if err:
+                    results[model_name] = {'error': err}
+                    continue
 
                 model_type = model_info['class'].__name__
                 t = torch.tensor(wave, dtype=torch.float32).unsqueeze(0)
@@ -917,9 +1439,10 @@ class ModelCompareView(APIView):
                     t = t.unsqueeze(0)
 
                 with torch.no_grad():
-                    logits = model(t)
-                    pred = torch.argmax(logits, dim=1).item()
-                    probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()[0]
+                    output = model(t)
+                    probs_tensor = as_probabilities(output)
+                    pred = torch.argmax(probs_tensor, dim=1).item()
+                    probs = probs_tensor.numpy().tolist()[0]
 
                 label_name = all_labels[pred].name if pred in all_labels else f'Class {pred}'
                 results[model_name] = {
@@ -948,12 +1471,17 @@ class ModelAnalysisView(APIView):
     Calculates Accuracy and Confusion Matrix for all available models
     using Human Labeled records as the Ground Truth.
     """
+    permission_classes = [IsAuthenticated, IsDoctorOrAdmin]
+
     def get(self, request):
         from django.conf import settings
         BASE_DIR = settings.BASE_DIR  # e.g.  .../backend/
 
         # 1. Get all records with human labels
-        labeled_records = ECGRecord.objects.exclude(label=None).select_related('label')
+        labeled_records = scope_records_for_user(
+            request.user,
+            ECGRecord.objects.exclude(label=None).select_related('label')
+        )
         if not labeled_records.exists():
             return Response({'error': 'No human-labeled records found for analysis.'}, status=400)
 
@@ -976,8 +1504,8 @@ class ModelAnalysisView(APIView):
             waves_data.append(w)
 
         # 4. Loop through each registered model
-        for model_id, model_info in MODEL_MAP.items():
-            abs_path = str(BASE_DIR / model_info['path'])
+        for model_id, model_info in get_visible_model_runtime_catalog_for_user(request.user).items():
+            abs_path = resolve_model_path(model_info)
             if not os.path.exists(abs_path):
                 continue
             
@@ -986,21 +1514,13 @@ class ModelAnalysisView(APIView):
                 if model_id not in loaded_models:
                     mc = model_info['class']
                     kw = model_info.get('kwargs', {})
-                    try:
-                        m = mc(model_info['num_classes'], **kw)
-                    except TypeError:
+                    if mc in SKLEARN_WRAPPERS:
                         m = mc(model_path=abs_path, **kw)
-                    
-                    sklearn_wrappers = (ECGXGBoostWrapper, AdaBoostECGWrapper)
-                    try:
-                        from api.Model_architechture.MLModels import RandomForestECGWrapper
-                        sklearn_wrappers = (ECGXGBoostWrapper, AdaBoostECGWrapper, RandomForestECGWrapper)
-                    except ImportError:
-                        pass
-
-                    if hasattr(m, 'load_state_dict') and not isinstance(m, sklearn_wrappers):
+                    else:
+                        m = mc(model_info['num_classes'], **kw)
                         m.load_state_dict(torch.load(abs_path, map_location='cpu'))
-                    m.eval()
+                    if hasattr(m, 'eval'):
+                        m.eval()
                     loaded_models[model_id] = m
                 
                 model = loaded_models[model_id]
@@ -1008,15 +1528,20 @@ class ModelAnalysisView(APIView):
 
                 confusion_matrix = [[0] * num_labels for _ in range(num_labels)]
                 correct = 0
+                evaluated_total = 0
 
                 for i, wave in enumerate(waves_data):
+                    if len(wave) != model_info['input_size']:
+                        continue
+                    evaluated_total += 1
                     t = torch.tensor(wave, dtype=torch.float32).unsqueeze(0)
                     if model_type in ('ECG1DCNN', 'ECGCNNLSTMHybrid', 'ECGResNet1D'):
                         t = t.unsqueeze(0)
                     
                     with torch.no_grad():
-                        logits = model(t)
-                        pred = torch.argmax(logits, dim=1).item()
+                        output = model(t)
+                        probs_tensor = as_probabilities(output)
+                        pred = torch.argmax(probs_tensor, dim=1).item()
                     
                     actual = ground_truth[i]
                     if pred == actual:
@@ -1025,13 +1550,17 @@ class ModelAnalysisView(APIView):
                     if actual in label_map and pred in label_map:
                         confusion_matrix[label_map[actual]][label_map[pred]] += 1
 
-                accuracy = correct / len(ground_truth) if ground_truth else 0
+                if evaluated_total == 0:
+                    analysis_results[model_id] = {'error': 'No records matched this model input size.'}
+                    continue
+
+                accuracy = correct / evaluated_total if evaluated_total else 0
                 
                 analysis_results[model_id] = {
                     'label': model_info.get('label', model_id),
                     'accuracy': round(accuracy, 4),
                     'correct': correct,
-                    'total': len(ground_truth),
+                    'total': evaluated_total,
                     'confusion_matrix': confusion_matrix,
                 }
 
@@ -1056,13 +1585,15 @@ class VerifyLabelView(APIView):
     POST { "record_id": 123, "verified": true, "label": 0 }  -- also set the human label
     """
 
+    permission_classes = [IsAuthenticated, IsDoctorOrAdmin]
+
     def post(self, request):
         record_id = request.data.get('record_id')
         verified = request.data.get('verified', True)
         label_value = request.data.get('label')  # optional
 
         try:
-            record = ECGRecord.objects.get(id=record_id)
+            record = scope_records_for_user(request.user, ECGRecord.objects).get(id=record_id)
         except ECGRecord.DoesNotExist:
             return Response({'error': 'Record not found.'}, status=404)
 
@@ -1106,25 +1637,51 @@ class TrainModelView(APIView):
     Returns: { "status": "running"|"done"|"error", "logs": [...] }
     """
 
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
     def post(self, request):
         model_name = request.data.get('model', 'ECG1DCNN')
+        patient_id = request.data.get('patient_id')
+        label_filters = request.data.get('labels', [])
+        max_records = request.data.get('max_records')
         epochs = int(request.data.get('epochs', 30))
         lr = float(request.data.get('lr', 1e-3))
         batch = int(request.data.get('batch', 64))
         use_ai_labels = bool(request.data.get('use_ai_labels', False))
 
-        if model_name not in MODEL_MAP:
-            return Response({'error': f'Unknown model "{model_name}". Available: {list(MODEL_MAP.keys())}'}, status=400)
+        try:
+            max_records = int(max_records) if max_records not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            return Response({'error': 'max_records must be an integer.'}, status=400)
+        if label_filters is not None and not isinstance(label_filters, list):
+            return Response({'error': 'labels must be a list.'}, status=400)
+        if isinstance(label_filters, list) and len(label_filters) == 0:
+            return Response({'error': 'Choose at least one label for training.'}, status=400)
+
+        model_info = get_model_runtime_info(model_name)
+        if not model_info:
+            return Response({'error': f'Unknown model "{model_name}".'}, status=400)
+        if model_info['class'] in SKLEARN_WRAPPERS:
+            return Response({'error': f'Model "{model_name}" is inference-only and cannot be trained with this endpoint.'}, status=400)
         if epochs < 1 or epochs > 500:
             return Response({'error': 'epochs must be 1-500'}, status=400)
+        if max_records is not None and max_records < 2:
+            return Response({'error': 'max_records must be at least 2 when provided.'}, status=400)
 
         job_id = str(uuid.uuid4())[:8]
         with _JOBS_LOCK:
-            _TRAINING_JOBS[job_id] = {'status': 'running', 'logs': [], 'model': model_name}
+            _TRAINING_JOBS[job_id] = {
+                'status': 'running',
+                'logs': [],
+                'model': model_name,
+                'patient_id': patient_id,
+                'labels': label_filters,
+                'max_records': max_records,
+            }
 
         thread = threading.Thread(
             target=self._run_training,
-            args=(job_id, model_name, epochs, lr, batch, use_ai_labels),
+            args=(job_id, model_name, patient_id, label_filters, max_records, epochs, lr, batch, use_ai_labels),
             daemon=True,
         )
         thread.start()
@@ -1132,11 +1689,14 @@ class TrainModelView(APIView):
         return Response({
             'job_id': job_id,
             'model': model_name,
+            'patient_id': patient_id,
+            'labels': label_filters,
+            'max_records': max_records,
             'message': 'Training started in background. Poll /api/train/{job_id}/status/ for progress.',
         }, status=202)
 
     @staticmethod
-    def _run_training(job_id, model_name, epochs, lr, batch_size, use_ai_labels):
+    def _run_training(job_id, model_name, patient_id, label_filters, max_records, epochs, lr, batch_size, use_ai_labels):
         """Heavy work — runs in a daemon thread, never touches the HTTP cycle."""
         import numpy as np
         import torch
@@ -1150,25 +1710,52 @@ class TrainModelView(APIView):
             logger.info('[Train %s] %s', job_id, msg)
 
         try:
-            model_info = MODEL_MAP[model_name]
+            model_info = get_model_runtime_info(model_name)
+            if not model_info:
+                raise ValueError(f'Model "{model_name}" is no longer registered.')
             input_size = model_info['input_size']
             num_classes = model_info['num_classes']
             model_type = model_info['class'].__name__
-            save_path = model_info['path']
+            save_path = resolve_model_path(model_info)
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
             # ── Load data from DB ─────────────────────────────────────────────
-            log(f'Loading records from DB (use_ai_labels={use_ai_labels}) ...')
+            log(
+                'Loading records from DB '
+                f'(use_ai_labels={use_ai_labels}, patient_id={patient_id or "ALL"}, '
+                f'label_filters={label_filters or "ALL"}, max_records={max_records or "ALL"}) ...'
+            )
             if use_ai_labels:
-                qs = ECGRecord.objects.exclude(ai_label__isnull=True).select_related('ai_label').only('ecg_wave', 'ai_label__value')
+                qs = ECGRecord.objects.exclude(ai_label__isnull=True).select_related('ai_label').only('ecg_wave', 'ai_label__value', 'ai_label_id', 'created_at', 'patient_id')
                 get_label_val = lambda r: r.ai_label.value
+                get_label_db_id = lambda r: r.ai_label_id
             else:
-                qs = ECGRecord.objects.exclude(label__isnull=True).select_related('label').only('ecg_wave', 'label__value')
+                qs = ECGRecord.objects.exclude(label__isnull=True).select_related('label').only('ecg_wave', 'label__value', 'label_id', 'created_at', 'patient_id')
                 get_label_val = lambda r: r.label.value
+                get_label_db_id = lambda r: r.label_id
+            if patient_id:
+                qs = qs.filter(patient_id=str(patient_id))
+            selected_label_filters = [
+                {"id": int(item["id"]), "numRecords": int(item.get("numRecords", 0))}
+                for item in (label_filters or [])
+                if item.get("id") is not None and int(item.get("numRecords", 0)) > 0
+            ]
+            selected_label_ids = [item["id"] for item in selected_label_filters]
+            if selected_label_ids:
+                filter_field = "ai_label_id__in" if use_ai_labels else "label_id__in"
+                qs = qs.filter(**{filter_field: selected_label_ids})
+            label_limits = {item["id"]: item["numRecords"] for item in selected_label_filters}
+            label_counts = defaultdict(int)
 
             waves, label_vals = [], []
             skipped = 0
-            for rec in qs:
+            total_selected = 0
+            for rec in qs.order_by('created_at', 'id'):
+                label_db_id = get_label_db_id(rec)
+                if label_limits and label_counts[label_db_id] >= label_limits.get(label_db_id, float("inf")):
+                    continue
+                if max_records is not None and total_selected >= max_records:
+                    break
                 wave = rec.ecg_wave
                 if isinstance(wave, str):
                     wave = [float(v) for v in wave.split(',')]
@@ -1177,6 +1764,8 @@ class TrainModelView(APIView):
                     continue
                 waves.append(wave)
                 label_vals.append(get_label_val(rec))
+                label_counts[label_db_id] += 1
+                total_selected += 1
 
             log(f'Loaded {len(waves)} records | Skipped {skipped} (wrong length)')
             if len(waves) < 20:
@@ -1184,6 +1773,15 @@ class TrainModelView(APIView):
 
             # Remap labels to 0-based
             unique_labels = sorted(set(label_vals))
+            if len(unique_labels) < 2:
+                raise ValueError('Training requires at least 2 distinct labels after applying patient/label filters.')
+            raw_label_counts = {label: label_vals.count(label) for label in unique_labels}
+            too_small = [str(label) for label, count in raw_label_counts.items() if count < 2]
+            if too_small:
+                raise ValueError(
+                    'Each selected class needs at least 2 records for train/validation split. '
+                    f'Classes too small: {", ".join(too_small)}.'
+                )
             remap = {v: i for i, v in enumerate(unique_labels)}
             labels_arr = np.array([remap[v] for v in label_vals], dtype=np.int64)
             waves_arr = np.array(waves, dtype=np.float32)
@@ -1268,6 +1866,16 @@ class TrainModelView(APIView):
             log(f'Training complete. Best val acc: {best_val_acc:.4f} at epoch {best_epoch}')
             log(f'Saved to: {save_path}')
 
+            if actual_classes != num_classes:
+                try:
+                    model_obj = DeployedModel.objects.filter(key=model_name, is_active=True).first()
+                    if model_obj and model_obj.num_classes != actual_classes:
+                        model_obj.num_classes = actual_classes
+                        model_obj.save(update_fields=['num_classes'])
+                        log(f'Updated deployed model num_classes to {actual_classes}.')
+                except Exception as e:
+                    log(f'Warning: unable to persist updated num_classes: {e}')
+
             # Reload the newly trained model into loaded_models cache
             kw = model_info.get('kwargs', {})
             trained_model = mc(actual_classes, **kw)
@@ -1288,10 +1896,19 @@ class TrainModelView(APIView):
 
 class TrainJobListView(APIView):
     """GET /api/train/jobs/ — returns list of recent job IDs and models."""
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
     def get(self, request):
         with _JOBS_LOCK:
             jobs = [
-                {'job_id': jid, 'model': info['model'], 'status': info['status']}
+                {
+                    'job_id': jid,
+                    'model': info['model'],
+                    'status': info['status'],
+                    'patient_id': info.get('patient_id'),
+                    'labels': info.get('labels', []),
+                    'max_records': info.get('max_records'),
+                }
                 for jid, info in _TRAINING_JOBS.items()
             ]
         return Response(jobs)
@@ -1299,6 +1916,7 @@ class TrainJobListView(APIView):
 
 class TrainStatusView(APIView):
     """GET /api/train/<job_id>/status/"""
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request, job_id):
         with _JOBS_LOCK:
@@ -1310,14 +1928,16 @@ class TrainStatusView(APIView):
             'model': job['model'],
             'status': job['status'],
             'logs': job['logs'],
+            'patient_id': job.get('patient_id'),
+            'labels': job.get('labels', []),
+            'max_records': job.get('max_records'),
         })
 
 
 # Config
 DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1U7dPo0R20KonIRP46NsBRFREbAJ__O6A"
-LOCAL_MODELS_FOLDER = "api/models"
-os.makedirs(LOCAL_MODELS_FOLDER, exist_ok=True)
 class DriveModelListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
 
     def get(self, request):
         target_folder = request.query_params.get("target_folder", LOCAL_MODELS_FOLDER)

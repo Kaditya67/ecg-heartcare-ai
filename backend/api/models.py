@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 class ECGLabel(models.Model):
     value = models.IntegerField(unique=True)  # numerical value, e.g., 0,1,2
@@ -8,6 +9,52 @@ class ECGLabel(models.Model):
     
     def __str__(self):
         return f"{self.name} ({self.value})"
+
+
+class DeployedModel(models.Model):
+    SOURCE_BUILTIN = "builtin"
+    SOURCE_UPLOADED = "uploaded"
+    SOURCE_CHOICES = [
+        (SOURCE_BUILTIN, "Built In"),
+        (SOURCE_UPLOADED, "Uploaded"),
+    ]
+
+    key = models.CharField(max_length=100, unique=True)
+    label = models.CharField(max_length=150)
+    base_model_key = models.CharField(max_length=100)
+    source_type = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_BUILTIN)
+    weights_path = models.CharField(max_length=255)
+    input_size = models.IntegerField()
+    num_classes = models.IntegerField()
+    trainable = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["key"]),
+            models.Index(fields=["base_model_key"]),
+            models.Index(fields=["source_type", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.label} [{self.key}]"
+
+
+class PatientModelAssignment(models.Model):
+    patient_id = models.CharField(max_length=100, unique=True, db_index=True)
+    model = models.ForeignKey(DeployedModel, on_delete=models.CASCADE, related_name="patient_assignments")
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["patient_id"]),
+        ]
+
+    def __str__(self):
+        return f"Patient {self.patient_id} -> {self.model.key}"
 
 class ECGFile(models.Model):
     file_name = models.CharField(max_length=255, unique=True)
@@ -87,12 +134,45 @@ class ECGRecord(models.Model):
     def __str__(self):
         label_name = self.label.name if self.label else "No Label"
         return f"Patient {self.patient_id} - Label: {label_name} - Verified: {self.is_verified}"
-
-from django.contrib.auth.models import User
-
 class Profile(models.Model):
+    ROLE_ADMIN = "admin"
+    ROLE_DOCTOR = "doctor"
+    ROLE_PATIENT = "patient"
+    ROLE_CHOICES = [
+        (ROLE_ADMIN, "Admin"),
+        (ROLE_DOCTOR, "Doctor"),
+        (ROLE_PATIENT, "Patient"),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     is_authorized = models.BooleanField(default=False)  # Admins set this
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_DOCTOR)
+    patient_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Required when the user is a patient. Limits access to this patient's records.",
+    )
+    show_missing_weights = models.BooleanField(
+        default=True,
+        help_text="Show models that do not have weights available in the UI.",
+    )
+    default_plot_library = models.CharField(
+        max_length=50,
+        default="echarts",
+        help_text="Default plotting library to use for ECG charts.",
+    )
+
+    @property
+    def effective_role(self):
+        if self.user.is_superuser or self.user.is_staff:
+            return self.ROLE_ADMIN
+        return self.role
+
+    def save(self, *args, **kwargs):
+        if self.effective_role != self.ROLE_PATIENT:
+            self.patient_id = None
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.user.username} Profile"
+        return f"{self.user.username} Profile ({self.effective_role})"

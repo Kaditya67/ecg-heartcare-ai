@@ -11,6 +11,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import ModelPage from './pages/ModelPage';
 import TrainingPage from './pages/TrainingPage';
 import AnalysisPage from './pages/AnalysisPage';
+import SettingsPage from './pages/SettingsPage';
 
 function App() {
   return (
@@ -23,7 +24,7 @@ function App() {
       <Route
         path="/dashboard"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'doctor', 'patient']}>
             <Home />
           </ProtectedRoute>
         }
@@ -31,7 +32,7 @@ function App() {
       <Route
         path="/upload"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin']}>
             <UploadPage />
           </ProtectedRoute>
         }
@@ -39,7 +40,7 @@ function App() {
       <Route
         path="/EcgLabel"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'doctor', 'patient']}>
             <PaginatedDataPage />
           </ProtectedRoute>
         }
@@ -47,7 +48,7 @@ function App() {
       <Route
         path="/custom"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'doctor', 'patient']}>
             <CustomExportPage />
           </ProtectedRoute>
         }
@@ -55,7 +56,7 @@ function App() {
       <Route
         path="/models"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'doctor', 'patient']}>
             <ModelPage />
           </ProtectedRoute>
         }
@@ -63,7 +64,7 @@ function App() {
       <Route
         path="/training"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin']}>
             <TrainingPage />
           </ProtectedRoute>
         }
@@ -71,8 +72,16 @@ function App() {
       <Route
         path="/analysis"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['admin', 'doctor']}>
             <AnalysisPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute allowedRoles={['admin', 'doctor', 'patient']}>
+            <SettingsPage />
           </ProtectedRoute>
         }
       />

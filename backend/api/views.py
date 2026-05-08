@@ -1215,6 +1215,7 @@ class DeployedModelRegistryView(APIView):
         label = str(request.data.get("label", "")).strip()
         base_model_key = str(request.data.get("base_model_key", "")).strip()
         key = str(request.data.get("key", "")).strip()
+        overwrite = str(request.data.get("overwrite", "")).lower() in ("1", "true", "yes", "on")
         input_size = request.data.get("input_size")
         num_classes = request.data.get("num_classes")
 
@@ -1236,7 +1237,28 @@ class DeployedModelRegistryView(APIView):
         if ext != expected_ext:
             return Response({"error": f'Expected a {expected_ext} file for {base_model_key}.'}, status=400)
 
-        safe_key = re.sub(r"[^a-zA-Z0-9_]+", "_", key or label).strip("_") or uuid.uuid4().hex[:10]
+        safe_key_base = re.sub(r"[^a-zA-Z0-9_]+", "_", key or label).strip("_") or uuid.uuid4().hex[:10]
+        safe_key = safe_key_base
+
+        existing_model = None
+        if key:
+            existing_model = DeployedModel.objects.filter(key=safe_key).first()
+            if existing_model and not overwrite:
+                return Response(
+                    {"error": "Model key already exists. Set overwrite=true to replace the existing uploaded model."},
+                    status=400,
+                )
+            if existing_model and existing_model.source_type != DeployedModel.SOURCE_UPLOADED:
+                return Response(
+                    {"error": "Built-in models cannot be overwritten. Use a new key for uploaded models."},
+                    status=400,
+                )
+        else:
+            counter = 2
+            while DeployedModel.objects.filter(key=safe_key).exists():
+                safe_key = f"{safe_key_base}_{counter}"
+                counter += 1
+
         relative_path = f"{UPLOADED_MODELS_FOLDER}/{safe_key}_{uuid.uuid4().hex[:8]}{ext}"
         absolute_path = Path(resolve_model_path({"path": relative_path}))
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1244,6 +1266,18 @@ class DeployedModelRegistryView(APIView):
         with absolute_path.open("wb") as destination:
             for chunk in uploaded_file.chunks():
                 destination.write(chunk)
+
+        if existing_model:
+            existing_model.label = label
+            existing_model.base_model_key = base_model_key
+            existing_model.weights_path = relative_path
+            existing_model.input_size = input_size
+            existing_model.num_classes = num_classes
+            existing_model.trainable = MODEL_MAP[base_model_key]["class"] not in SKLEARN_WRAPPERS
+            existing_model.is_active = True
+            existing_model.save()
+            loaded_models.pop(existing_model.key, None)
+            return Response(DeployedModelSerializer(existing_model).data, status=200)
 
         model_obj = DeployedModel.objects.create(
             key=safe_key,

@@ -5,14 +5,6 @@ import { ThemeContext } from '../components/context/ThemeContext';
 import Footer from '../components/Footer';
 import { FaChartBar, FaTable, FaTrophy, FaMicrochip, FaExclamationCircle, FaCheckCircle, FaSync } from 'react-icons/fa';
 
-// Lazy import echarts to avoid build-time errors
-let ReactECharts = null;
-try {
-  ReactECharts = require('echarts-for-react').default;
-} catch (e) {
-  console.warn('echarts-for-react not found. Heatmap disabled.');
-}
-
 const LoadingOverlay = ({ loading, children, text = "Computing Metrics..." }) => (
   <div className="relative">
     {children}
@@ -38,6 +30,7 @@ const AnalysisPage = () => {
   const [selectedModel, setSelectedModel] = useState(null);
   const [settings, setSettings] = useState({ default_plot_library: 'echarts' });
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [ReactECharts, setReactECharts] = useState(null);
 
   const fetchAnalysis = useCallback(async () => {
     setLoading(true);
@@ -78,6 +71,14 @@ const AnalysisPage = () => {
     };
 
     fetchSettings();
+  }, []);
+
+  useEffect(() => {
+    import('echarts-for-react').then(module => {
+      setReactECharts(() => module.default);
+    }).catch(e => {
+      console.warn('echarts-for-react not found. Heatmap disabled.');
+    });
   }, []);
 
   const getConfusionOptions = () => {
@@ -287,7 +288,7 @@ const AnalysisPage = () => {
                             />
                           ) : (
                             <div className="h-full flex items-center justify-center text-gray-400 text-xs">
-                              ECharts not available. Run <code className="mx-1 font-mono">npm install echarts</code> to enable heatmaps.
+                              ECharts not available. Run <code className="mx-1 font-mono">npm install echarts-for-react</code> to enable heatmaps.
                             </div>
                           )
                         ) : (

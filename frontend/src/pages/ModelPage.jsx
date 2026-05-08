@@ -40,12 +40,16 @@ const ModelPage = () => {
   const [uploadForm, setUploadForm] = useState({
     label: '',
     key: '',
+    overwrite: false,
     base_model_key: 'ECG1DCNN',
     input_size: 2604,
     num_classes: 4,
     file: null,
   });
   const builtinChoices = allModels.filter((model) => model.source_type === 'builtin');
+  const duplicateUploadModel = uploadForm.key
+    ? allModels.find((model) => model.key === uploadForm.key)
+    : null;
   const filteredModels = Object.entries(modelRegistry).filter(([id, info]) => {
     if (settings.show_missing_weights === false && !info.available) return false;
     return true;
@@ -99,12 +103,29 @@ const ModelPage = () => {
       toast.error('Choose a model file first.');
       return;
     }
+    if (uploadForm.overwrite && !uploadForm.key) {
+      toast.error('Provide the model key when using overwrite.');
+      return;
+    }
+    let effectiveOverwrite = uploadForm.overwrite;
+    if (duplicateUploadModel && !uploadForm.overwrite) {
+      const shouldOverwrite = window.confirm(
+        `A model with the key "${uploadForm.key}" already exists. Do you want to update it with this upload?`
+      );
+      if (!shouldOverwrite) {
+        toast.info('Upload cancelled. Enable Replace existing model to update the current model.');
+        return;
+      }
+      effectiveOverwrite = true;
+      setUploadForm((prev) => ({ ...prev, overwrite: true }));
+    }
     setUploadingModel(true);
     try {
       const formData = new FormData();
       formData.append('file', uploadForm.file);
       formData.append('label', uploadForm.label);
       formData.append('key', uploadForm.key);
+      formData.append('overwrite', effectiveOverwrite ? 'true' : 'false');
       formData.append('base_model_key', uploadForm.base_model_key);
       formData.append('input_size', uploadForm.input_size);
       formData.append('num_classes', uploadForm.num_classes);
@@ -240,6 +261,23 @@ const ModelPage = () => {
                   onChange={(e) => setUploadForm((prev) => ({ ...prev, key: e.target.value }))}
                   className="w-full bg-[var(--highlight)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs"
                 />
+                {duplicateUploadModel && (
+                  <div className="rounded-md border border-yellow-400 bg-yellow-50 p-2 text-[10px] text-yellow-900">
+                    A model with this key already exists: {duplicateUploadModel.label || duplicateUploadModel.key}. Check the box below to update it.
+                  </div>
+                )}
+                <label className="inline-flex items-center gap-2 text-[10px] text-gray-500 mt-2">
+                  <input
+                    type="checkbox"
+                    checked={uploadForm.overwrite}
+                    onChange={(e) => setUploadForm((prev) => ({ ...prev, overwrite: e.target.checked }))}
+                    className="w-4 h-4 rounded border-[var(--border)] bg-[var(--highlight)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                  />
+                  Replace existing model if key already exists
+                </label>
+                <p className="text-[9px] text-gray-400">
+                  If you provide a key that already exists, use this option to update that model instead of creating a new entry.
+                </p>
                 <select
                   value={uploadForm.base_model_key}
                   onChange={(e) => setUploadForm((prev) => ({ ...prev, base_model_key: e.target.value }))}

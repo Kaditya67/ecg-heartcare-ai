@@ -1,4 +1,4 @@
-# ECG Labeling System
+    # ECG Labeling System
 
 A full-stack web application for labeling and managing ECG (Electrocardiogram) data. This system allows medical professionals to upload ECG data, label it manually or with AI assistance, and visualize the results.
 

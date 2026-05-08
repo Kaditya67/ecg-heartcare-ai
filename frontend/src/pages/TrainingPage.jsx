@@ -34,18 +34,18 @@ const TrainingPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
 
   // Fetch models and jobs on mount
   useEffect(() => {
     API.get("/model_list/")
       .then((resp) => {
-        setModels(resp.data.models || {});
-        const filtered = Object.entries(resp.data.models || {}).filter(
-          ([name, info]) => {
-            return settings.show_missing_weights || info.has_weights;
-          },
-        );
+        const modelData = resp.data.models || {};
+        setModels(modelData);
+        const filtered = Object.entries(modelData).filter(([name, info]) => {
+          const hasWeights = info.has_weights ?? info.available ?? false;
+          return settings.show_missing_weights || hasWeights;
+        });
         const firstKey = filtered[0]?.[0];
         if (firstKey) {
           setSelectedModel(firstKey);
@@ -62,7 +62,8 @@ const TrainingPage = () => {
   // Update selectedModel when settings change
   useEffect(() => {
     const filtered = Object.entries(models).filter(([name, info]) => {
-      return settings.show_missing_weights || info.has_weights;
+      const hasWeights = info.has_weights ?? info.available ?? false;
+      return settings.show_missing_weights || hasWeights;
     });
     const currentInFiltered = filtered.some(([name]) => name === selectedModel);
     if (!currentInFiltered && filtered.length > 0) {
@@ -126,9 +127,11 @@ const TrainingPage = () => {
     return () => clearInterval(interval);
   }, [activeJob]);
 
-  // Auto-scroll logs
+  // Auto-scroll logs within the terminal container
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
   }, [activeJob?.logs]);
 
   const handleStartTraining = async () => {
@@ -191,7 +194,8 @@ const TrainingPage = () => {
   };
 
   const filteredModels = Object.entries(models).filter(([name, info]) => {
-    return settings.show_missing_weights || info.has_weights;
+    const hasWeights = info.has_weights ?? info.available ?? false;
+    return settings.show_missing_weights || hasWeights;
   });
 
   return (
@@ -490,7 +494,7 @@ const TrainingPage = () => {
                 </div>
               </div>
 
-              <div className="flex-grow p-6 font-mono text-xs overflow-y-auto custom-scrollbar bg-black selection:bg-[var(--accent)] selection:text-white">
+              <div ref={logContainerRef} className="flex-grow p-6 font-mono text-xs overflow-y-auto custom-scrollbar bg-black selection:bg-[var(--accent)] selection:text-white">
                 {!activeJob ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-700 gap-6 opacity-30">
                     <FaBrain size={48} />
@@ -523,7 +527,6 @@ const TrainingPage = () => {
                         </span>
                       </div>
                     ))}
-                    <div ref={logEndRef} />
                   </div>
                 )}
               </div>

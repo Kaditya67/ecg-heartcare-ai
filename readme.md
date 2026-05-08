@@ -1,152 +1,241 @@
 # ECG Labeling System
 
-This project is a **full-stack web application** for labeling and managing ECG data.
-It consists of the following components:
+A full-stack web application for labeling and managing ECG (Electrocardiogram) data. This system allows medical professionals to upload ECG data, label it manually or with AI assistance, and visualize the results.
 
-- **Backend**: Django (REST API, data processing, database management)
-- **Frontend**: React (user interface for labeling and visualization)
+## Features
 
-***
+- **ECG Data Upload**: Support for CSV and Excel files
+- **Manual Labeling**: Human experts can label ECG records
+- **AI-Assisted Labeling**: Integrated machine learning models for automated labeling
+- **Data Visualization**: Interactive charts using ECharts and Plotly
+- **User Management**: Role-based access (Admin, Doctor, Patient)
+- **Real-time Processing**: Redis-backed caching for performance
+- **Model Management**: Deploy and manage multiple ML models
 
-## Getting Started
+## Tech Stack
+
+### Backend
+- **Django 5.2.5**: Web framework
+- **Django REST Framework**: API development
+- **SQLite**: Database (default, can be changed to PostgreSQL)
+- **Redis**: Caching and session storage
+- **PyTorch**: Machine learning framework
+- **XGBoost**: Gradient boosting for ML models
+
+### Frontend
+- **React 19**: UI framework
+- **Vite**: Build tool and dev server
+- **Tailwind CSS**: Styling
+- **ECharts & Plotly**: Data visualization
+- **Axios**: HTTP client
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Redis (local installation or Docker)
+- Git
+
+## Installation
 
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Kaditya67/ecg-heartcare-ai.git
+cd ecg-heartcare-ai
 ```
 
+### 2. Backend Setup
 
-### 2. Setup Backend (Django)
-
-Move into the backend folder:
-
+#### Create Virtual Environment
 ```bash
 cd backend
-```
-
-Create and activate a virtual environment:
-
-```bash
 python -m venv venv
-source venv/bin/activate   # For Linux/Mac
-venv\Scripts\activate      # For Windows
 ```
 
-Install dependencies:
+#### Activate Virtual Environment
+- **Windows (Command Prompt)**:
+  ```cmd
+  venv\Scripts\activate
+  ```
+- **Windows (PowerShell)**:
+  ```powershell
+  venv\Scripts\Activate.ps1
+  ```
+- **Linux/Mac**:
+  ```bash
+  source venv/bin/activate
+  ```
 
+#### Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-Run migrations and start the server:
-
+#### Database Setup
 ```bash
 python manage.py migrate
-python manage.py runserver
 ```
 
-By default, the backend runs at:
-`http://127.0.0.1:8000/`
+#### Create Superuser (Optional)
+```bash
+python manage.py createsuperuser
+```
 
-***
-
-### 3. Setup Frontend (React)
-
-Move into the frontend folder:
+### 3. Frontend Setup
 
 ```bash
 cd ../frontend
-```
-
-Install dependencies:
-
-```bash
 npm install
 ```
 
-Start the development server:
+### 4. Redis Setup
 
-```bash
-npm run dev
-```
+#### Option 1: Local Installation
+- **Windows**: Download and install Redis from [redis.io](https://redis.io/download)
+- **Linux/Mac**: Use package manager or download from redis.io
 
-By default, the frontend runs at:
-`http://localhost:5173/`
-
-*** 
-
-### 4. Starting Redis
-
-#### Option 1: If Redis is installed locally on your system
-
-For Linux/macOS:
-
+Start Redis:
 ```bash
 redis-server
 ```
 
-For Windows (with WSL or Redis installed):
-
-```bash
-redis-server.exe
-```
-
-Or via WSL:
-
-```bash
-wsl redis-server
-```
-
-
 #### Option 2: Using Docker
-
-If you have Docker installed, you can run Redis with:
-
 ```bash
 docker run --name ecg-redis -p 6379:6379 -d redis
 ```
 
+## Running the Application
 
-**Important**:
-
-- Make sure your Django (backend) settings point to the correct Redis URL, e.g., `redis://127.0.0.1:6379` if running locally.
-
-***
-
-## Full Local Development Workflow
-
-1. **Start Redis**
-2. **Start Django backend** (`cd backend && python manage.py runserver`)
-3. **Start React frontend** (`cd frontend && npm start`)
-
-
-
-## 📂 Project Structure
-
+### Start Backend
+```bash
+cd backend
+# Activate venv if not already
+python manage.py runserver
 ```
-ecg-labeling-system/
-│
-├── backend/          # Django backend (APIs, models, database)
-├── frontend/         # React frontend (UI for labeling, visualization)
-├── readme.md         # Project documentation (this file)
+Backend runs at: `http://127.0.0.1:8000/`
+
+### Start Frontend
+```bash
+cd frontend
+npm run dev
+```
+Frontend runs at: `http://localhost:5173/`
+
+### Start Redis (if not using Docker)
+Ensure Redis is running on port 6379.
+
+## Configuration
+
+### Environment Variables
+Create a `.env` file in the backend directory:
+
+```env
+DEBUG=True
+SECRET_KEY=your-secret-key-here
+DATABASE_URL=sqlite:///db.sqlite3
+REDIS_URL=redis://127.0.0.1:6379/1
 ```
 
+### Django Settings
+Key settings in `backend/core/settings.py`:
+- `ALLOWED_HOSTS`: Add your domain in production
+- `CORS_ALLOWED_ORIGINS`: Configure for frontend URL
+- `CACHES`: Redis configuration
+- `DATABASES`: Database configuration
 
-## Tech Stack
+## Model Setup
 
-- **Backend**: Django, Django REST Framework
-- **Frontend**: React, Axios
-- **Database**: SQLite (default, can be switched to PostgreSQL/MySQL)
-- **Other Tools**: npm/yarn, Python venv
+The system includes pre-trained ML models. Place model files in `backend/api/models/`:
 
-***
+- `best_ecg_1dcnn.pth`: PyTorch CNN model
+- `best_bert_ecg.pth`: BERT-based model
+- `ecg_xgboost.pth`: XGBoost model
 
-## Future Improvements
+Models are automatically loaded on startup.
 
-- Model Integration 
-- Real time collaboration
-- More charts
+## API Documentation
 
-### Demo of the System
-[▶️ Watch Demo Video (Google Drive)](https://drive.google.com/file/d/1giqB2EaELZ_RCoDTJQc_9VJoIJpz4lQr/preview)
+### Authentication
+The API uses JWT tokens for authentication.
+
+### Key Endpoints
+- `POST /api/auth/login/`: User login
+- `GET /api/ecg-records/`: List ECG records
+- `POST /api/upload/`: Upload ECG data
+- `GET /api/models/`: List available models
+
+## Development
+
+### Running Tests
+```bash
+cd backend
+python manage.py test
+```
+
+### Linting
+```bash
+cd frontend
+npm run lint
+```
+
+### Building for Production
+```bash
+cd frontend
+npm run build
+```
+
+## Deployment
+
+### Backend Deployment
+1. Set `DEBUG=False` in settings
+2. Configure production database
+3. Use a WSGI server like Gunicorn
+4. Set up reverse proxy (nginx)
+
+### Frontend Deployment
+1. Build the application: `npm run build`
+2. Serve static files from `dist/` directory
+3. Configure routing for SPA
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Redis Connection Error**
+   - Ensure Redis is running on port 6379
+   - Check `REDIS_URL` in settings
+
+2. **Model Loading Errors**
+   - Verify model files exist in `api/models/`
+   - Check file permissions
+
+3. **CORS Errors**
+   - Add frontend URL to `CORS_ALLOWED_ORIGINS`
+
+4. **Database Errors**
+   - Run `python manage.py migrate`
+   - Check database file permissions
+
+### Logs
+- Backend logs: Check Django console output
+- Frontend logs: Browser developer tools
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make changes and test
+4. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Demo
+
+[▶️ Watch Demo Video](https://drive.google.com/file/d/1giqB2EaELZ_RCoDTJQc_9VJoIJpz4lQr/preview)
+
+## Contact
+
+For questions or support, please open an issue on GitHub.
